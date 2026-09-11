@@ -1,0 +1,14 @@
+pluginManagement {
+    repositories {
+        // 国内镜像优先，加速插件解析（拉不到时会自动回落到官方源）
+        maven {
+            name = 'Aliyun Gradle Plugin'
+            url = 'https://maven.aliyun.com/repository/gradle-plugin'
+        }
+        gradlePluginPortal()
+        maven {
+            name = 'MinecraftForge'
+            url = 'https://maven.minecraftforge.net/'
+        }
+    }
+}

@@ -2533,6 +2533,24 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         except ActionError:
             return None
 
+    # 常见的食物物品 id（判断「身上有没有吃的」用；不求全，够用就行）
+    _FOOD_IDS = frozenset({
+        "minecraft:bread", "minecraft:cooked_beef", "minecraft:cooked_porkchop",
+        "minecraft:cooked_chicken", "minecraft:cooked_mutton", "minecraft:cooked_rabbit",
+        "minecraft:cooked_cod", "minecraft:cooked_salmon", "minecraft:beef",
+        "minecraft:porkchop", "minecraft:chicken", "minecraft:mutton", "minecraft:rabbit",
+        "minecraft:cod", "minecraft:salmon", "minecraft:apple", "minecraft:golden_apple",
+        "minecraft:enchanted_golden_apple", "minecraft:carrot", "minecraft:golden_carrot",
+        "minecraft:potato", "minecraft:baked_potato", "minecraft:beetroot",
+        "minecraft:beetroot_soup", "minecraft:mushroom_stew", "minecraft:rabbit_stew",
+        "minecraft:suspicious_stew", "minecraft:melon_slice", "minecraft:sweet_berries",
+        "minecraft:glow_berries", "minecraft:dried_kelp", "minecraft:cookie",
+        "minecraft:pumpkin_pie", "minecraft:honey_bottle", "minecraft:tropical_fish",
+        "minecraft:pufferfish", "minecraft:rotten_flesh", "minecraft:spider_eye",
+        "minecraft:poisonous_potato", "minecraft:chorus_fruit", "minecraft:steak",
+        "minecraft:cooked_rabbit", "minecraft:kelp",
+    })
+
     def _render_state(self, state: dict[str, Any]) -> str:
         """把状态快照渲染成给 LLM 看的紧凑文本。"""
         player = state.get("player") or {}
@@ -2624,6 +2642,21 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             summary = "、".join(f"{((s.get('item') or {}).get('name'))}×{((s.get('item') or {}).get('count'))}"
                                 for s in slots[:12])
             lines.append(f"背包：{summary}" + ("…" if len(slots) > 12 else ""))
+            # 有没有吃的？没有的话直接给出**获取办法** —— 饿着肚子干活是最容易翻车的一种状态，
+            # 与其等 AI 自己想，不如每次状态里就把它该去哪儿弄吃的说清楚。
+            food_hits = [s for s in slots
+                         if str((s.get("item") or {}).get("id", "")) in self._FOOD_IDS]
+            if food_hits:
+                names = "、".join(str((s.get("item") or {}).get("name")) for s in food_hits[:4])
+                lines.append(f"身上有吃的：{names}")
+            else:
+                lines.append("⚠ 背包里没有一点吃的。获取办法（挑一个去做）："
+                             "①**干草块**（hay_block，村庄/平原常见）拆成 9 小麦 → 3 小麦合成 1 面包；"
+                             "②**找宝箱**（村庄房屋、地牢、废弃矿井）：mc_scan_blocks 找 chest 再 mc_use_on_block 打开；"
+                             "③**打动物**（牛/猪/鸡/羊）：mc_scan_entities 找 cow 之类 → mc_attack → "
+                             "掉生肉，再用 mc_smelt 烤熟（生鸡肉会食物中毒，生牛肉回得少）；"
+                             "④**种地**：小麦种子 + 锄头，周期长，当长期方案。"
+                             "手里没吃的就别硬扛——先 mc_state 看饥饿值，低了优先去弄吃的。")
         else:
             lines.append("背包是空的。")
 

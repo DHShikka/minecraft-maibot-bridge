@@ -202,6 +202,20 @@ public final class BridgeConfig {
                      "战斗过程中不走这条：那时由战斗逻辑自己决定该射、该换还是该抡。")
             .define("autoReload", true);
 
+    private static final ForgeConfigSpec.BooleanValue AUTO_EAT = BUILDER
+            .comment("**受伤或饿了自动吃东西**：血量低于 autoEatHealth、或饥饿低于 autoEatHunger 时，",
+                     "从背包里挑**最好的**那份食物吃掉（按营养值排，同营养看饱和度）。",
+                     "只在 AI 托管 + 自己闲着时生效；战斗里由 defend 的战术自己决定先吃还是先撤。")
+            .define("autoEat", true);
+
+    private static final ForgeConfigSpec.DoubleValue AUTO_EAT_HEALTH = BUILDER
+            .comment("血量低于这个值就找东西吃（默认 16，即掉到 4 颗心以下）。")
+            .defineInRange("autoEatHealth", 16.0, 1.0, 20.0);
+
+    private static final ForgeConfigSpec.IntValue AUTO_EAT_HUNGER = BUILDER
+            .comment("饥饿值低于这个值就找东西吃（默认 16，满值是 20）。")
+            .defineInRange("autoEatHunger", 16, 1, 20);
+
     private static final ForgeConfigSpec.IntValue AUTO_ATTACK_RADIUS = BUILDER
             .comment("主动出击的警戒半径（格）。")
             .defineInRange("autoAttackRadius", 12, 3, 48);
@@ -359,6 +373,9 @@ public final class BridgeConfig {
     public static int autoFightCooldownMs = 1500;
     public static boolean autoAttackHostiles = true;
     public static boolean autoReload = true;
+    public static boolean autoEat = true;
+    public static double autoEatHealth = 16.0;
+    public static int autoEatHunger = 16;
     public static int autoAttackRadius = 12;
     public static int autoAttackCooldownMs = 4000;
     public static int autoAttackMaxKills = 4;
@@ -447,6 +464,9 @@ public final class BridgeConfig {
         autoFightCooldownMs = AUTO_FIGHT_COOLDOWN_MS.get();
         autoAttackHostiles = AUTO_ATTACK_HOSTILES.get();
         autoReload = AUTO_RELOAD.get();
+        autoEat = AUTO_EAT.get();
+        autoEatHealth = AUTO_EAT_HEALTH.get();
+        autoEatHunger = AUTO_EAT_HUNGER.get();
         autoAttackRadius = AUTO_ATTACK_RADIUS.get();
         autoAttackCooldownMs = AUTO_ATTACK_COOLDOWN_MS.get();
         autoAttackMaxKills = AUTO_ATTACK_MAX_KILLS.get();

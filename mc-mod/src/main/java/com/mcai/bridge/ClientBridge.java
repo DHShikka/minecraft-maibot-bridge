@@ -199,6 +199,8 @@ public final class ClientBridge {
         ActionExecutor.get().autoDefendTick(mc);
         // 弹匣清空自动换弹：闲下来时发现手上是把空枪、背包有子弹，就自己补上
         ActionExecutor.get().autoReloadTick(mc);
+        // 受伤或饿了就吃东西（挑背包里最好的那份）
+        ActionExecutor.get().autoEatTick(mc);
 
         if (!isConnected() || !handshakeDone) {
             return;

@@ -454,16 +454,10 @@ public final class DefendTask extends Task {
         return CombatKit.findMeleeWeaponId(player);
     }
 
-    /** 在背包里找一个能吃的东西；没有就返回 null。 */
+    /** 在背包里找一个能吃的东西 —— **挑最好的那份**（营养优先，饱和其次）；没有就返回 null。 */
     private static String findFoodId(final LocalPlayer player) {
-        // 扫整个背包而不只是快捷栏：equip 子任务能把背包里的东西换到手上
-        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
-            final ItemStack stack = player.getInventory().getItem(slot);
-            if (isEdible(stack)) {
-                return GameUtils.itemId(stack);
-            }
-        }
-        return null;
+        final ItemStack best = CombatKit.findBestFood(player);
+        return best.isEmpty() ? null : GameUtils.itemId(best);
     }
 
     private static Entity findById(final LocalPlayer player, final String uuid) {

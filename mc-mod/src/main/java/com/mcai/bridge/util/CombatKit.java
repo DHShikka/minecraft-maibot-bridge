@@ -466,6 +466,86 @@ public final class CombatKit {
         };
     }
 
+    /**
+     * 背包里**最好的**那份食物。
+     *
+     * <p>「能吃好的尽量吃好的」：按营养值排，同营养再看饱和度 —— 而不是背包顺序里第一个能吃的
+     * （以前就是这么挑的，于是炖菜和生鸡肉摆一起时会先啃生鸡肉）。</p>
+     *
+     * <p>只看能不能吃、值不值，不看稀有度 —— 金苹果在这种排法里确实会排前面，
+     * 那正是「能吃好的就吃好的」的意思。</p>
+     */
+    public static ItemStack findBestFood(final LocalPlayer player) {
+        if (player == null) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack best = ItemStack.EMPTY;
+        double bestScore = -1;
+        final Inventory inv = player.getInventory();
+        for (int slot = 0; slot < inv.getContainerSize(); slot++) {
+            final ItemStack stack = inv.getItem(slot);
+            final double score = foodScore(stack, player);
+            if (score > bestScore) {
+                bestScore = score;
+                best = stack;
+            }
+        }
+        return best;
+    }
+
+    /** 食物的评分（不能吃返回 -1）：营养优先，饱和其次。 */
+    public static double foodScore(final ItemStack stack, final LocalPlayer player) {
+        if (stack == null || stack.isEmpty() || !stack.isEdible()) {
+            return -1;
+        }
+        try {
+            final net.minecraft.world.food.FoodProperties food = stack.getFoodProperties(player);
+            if (food == null) {
+                return -1;
+            }
+            return food.getNutrition() * 100.0 + food.getSaturationModifier() * 10.0;
+        } catch (final Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 这份食物吃了有没有附加效果（金苹果、迷之炖菜这类**饱着吃也有用**的）。 */
+    public static boolean foodHasEffects(final ItemStack stack, final LocalPlayer player) {
+        if (stack == null || stack.isEmpty() || !stack.isEdible()) {
+            return false;
+        }
+        try {
+            final net.minecraft.world.food.FoodProperties food = stack.getFoodProperties(player);
+            return food != null && !food.getEffects().isEmpty();
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
+
+    /** 食物的可读信息（给结果和日志用）：叫什么、多少营养、多少饱和。 */
+    public static JsonObject foodInfo(final ItemStack stack, final LocalPlayer player) {
+        if (stack == null || stack.isEmpty()) {
+            return null;
+        }
+        final JsonObject o = new JsonObject();
+        o.addProperty("item", GameUtils.itemId(stack));
+        o.addProperty("name", GameUtils.safeItemName(stack));
+        o.addProperty("count", stack.getCount());
+        try {
+            final net.minecraft.world.food.FoodProperties food = stack.getFoodProperties(player);
+            if (food != null) {
+                o.addProperty("nutrition", food.getNutrition());
+                o.addProperty("saturation", food.getSaturationModifier());
+                if (!food.getEffects().isEmpty()) {
+                    o.addProperty("hasEffects", true);
+                }
+            }
+        } catch (final Throwable ignored) {
+            // 忽略
+        }
+        return o;
+    }
+
     /** 远程武器状态：给状态快照用，让 AI 随时知道「手里这把还有几发」。 */
     public static JsonObject rangedStatus(final LocalPlayer player) {
         final ItemStack held = player.getMainHandItem();

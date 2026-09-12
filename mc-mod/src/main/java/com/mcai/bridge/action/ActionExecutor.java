@@ -337,6 +337,97 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
         return false;
     }
 
+    // ---------------------------------------------------------------- 自动进食
+
+    /** 上一次自动进食的时间与序号。 */
+    private long lastAutoEatAt;
+    private int autoEatSeq;
+    /** 两次自动进食之间至少隔多久（吃东西本身要 1.8 秒，别一直重开）。 */
+    private static final long AUTO_EAT_COOLDOWN_MS = 4000L;
+
+    /**
+     * **受伤或者饿了就吃东西，而且挑最好的吃。**
+     *
+     * <p>触发条件（任一）：血量低于 {@link BridgeConfig#autoEatHealth}、
+     * 或者饥饿值低于 {@link BridgeConfig#autoEatHunger}。</p>
+     *
+     * <p>「吃好的」由 {@link com.mcai.bridge.util.CombatKit#findBestFood} 保证：按营养值排、
+     * 同营养看饱和度 —— 背包里同时有炖菜和生鸡肉时会先吃炖菜，而不是看谁在背包里排前面。</p>
+     *
+     * <p>照旧的三条自我约束：只在 AI 托管时、只在自己闲着时、且有冷却（吃东西要 1.8 秒，
+     * 别一直重开）。战斗里不归它管 —— 那时由 {@code defend} 的战术决定先吃还是先撤。</p>
+     */
+    public void autoEatTick(final net.minecraft.client.Minecraft mc) {
+        if (!BridgeConfig.autoEat || !com.mcai.bridge.util.Takeover.isActive()) {
+            return;
+        }
+        if (mc == null || mc.player == null || mc.level == null) {
+            return;
+        }
+        if (current != null && ("attack".equals(current.type) || "defend".equals(current.type)
+                || "shoot".equals(current.type) || "reload".equals(current.type)
+                || "use".equals(current.type) || "use_item".equals(current.type)
+                || "equip".equals(current.type))) {
+            return;   // 正在打 / 正在吃 / 正在换手：别插手
+        }
+        if (isBusy()) {
+            return;   // 手上有活
+        }
+        final net.minecraft.client.player.LocalPlayer player = mc.player;
+        final float health = player.getHealth();
+        final int hunger = player.getFoodData().getFoodLevel();
+        final boolean hurt = health < BridgeConfig.autoEatHealth;
+        final boolean hungry = hunger < BridgeConfig.autoEatHunger;
+        if (!hurt && !hungry) {
+            return;
+        }
+        // 吃饱了就别再塞（饥饿值满了再吃普通食物是浪费）——
+        // 但**受伤时例外**：金苹果这类「吃了能治伤」的东西，饱着也照样有用。
+        final net.minecraft.world.item.ItemStack food =
+                com.mcai.bridge.util.CombatKit.findBestFood(player);
+        if (food.isEmpty()) {
+            return;   // 背包里没有能吃的：不折腾（真饿到不行 AI 会自己想办法）
+        }
+        if (!hungry && hunger >= 20
+                && !(hurt && com.mcai.bridge.util.CombatKit.foodHasEffects(food, player))) {
+            return;
+        }
+        final long now = System.currentTimeMillis();
+        if (now - lastAutoEatAt < AUTO_EAT_COOLDOWN_MS) {
+            return;
+        }
+        lastAutoEatAt = now;
+
+        // 手上不是这份食物就先换到手上（equip 会把背包里的东西挪进快捷栏）
+        String equipFirst = null;
+        if (!player.getMainHandItem().is(food.getItem())) {
+            equipFirst = com.mcai.bridge.util.GameUtils.itemId(food);
+        }
+        final JsonObject params = new JsonObject();
+        params.addProperty("hand", "main");
+        params.addProperty("durationMs", 1800);
+        params.addProperty("reason", "auto_eat");
+        final Task eat = createTask("auto-eat-" + (++autoEatSeq), "use_item", params, 20_000L);
+        if (eat == null) {
+            return;
+        }
+        queue.addFirst(eat);
+        if (equipFirst != null) {
+            final JsonObject equipParams = new JsonObject();
+            equipParams.addProperty("item", equipFirst);
+            equipParams.addProperty("reason", "auto_eat");
+            final Task equipTask = createTask("auto-eat-equip-" + (++autoEatSeq), "equip",
+                    equipParams, 10_000L);
+            if (equipTask != null) {
+                queue.addFirst(equipTask);   // 队首顺序：换食物 → 吃
+            }
+        }
+        final JsonObject info = com.mcai.bridge.util.CombatKit.foodInfo(food, player);
+        McAiBridge.LOGGER.info("[MaiBot Bridge] 自动进食：{}（血量 {}，饥饿 {}{}）",
+                info == null ? "食物" : info.get("name").getAsString(),
+                Math.round(health), hunger, hurt ? "，受伤了" : "，饿了");
+    }
+
     // ---------------------------------------------------------------- 自动反击
 
     /**

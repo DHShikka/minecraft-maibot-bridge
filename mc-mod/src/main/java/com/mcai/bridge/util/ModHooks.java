@@ -463,6 +463,35 @@ public final class ModHooks {
         return taczInvoke(player, "bolt");
     }
 
+    /**
+     * **右键瞄准（ADS）**。
+     *
+     * <p>就是玩家按住右键的那个举枪瞄准 —— TaCZ 的接口里叫 {@code aim(boolean)}。
+     * 和开火一样走 API 而不是按键：它的输入前有 {@code InputExtraCheck.isInGame()}
+     * 那道闸门（要求鼠标锁在窗口里），而 AI 托管时鼠标是放开的，按右键根本进不去。</p>
+     *
+     * @return 调成功没有（没装 TaCZ 就是 false）
+     */
+    public static boolean taczAim(final LocalPlayer player, final boolean aiming) {
+        final Class<?> cls = taczOperatorClass();
+        final Object op = taczOperator(player);
+        if (cls == null || op == null) {
+            return false;
+        }
+        try {
+            cls.getMethod("aim", boolean.class).invoke(op, aiming);
+            return true;
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
+
+    /** 现在是不是在瞄准状态（给结果里报一下，便于确认 ADS 真开了）。 */
+    public static String taczAimState(final LocalPlayer player) {
+        final String out = taczInvoke(player, "isAim");
+        return out == null ? "" : out;
+    }
+
     /** 把枪掏出来（切枪后要先有这个动作才打得出子弹）。 */
     public static boolean taczDraw(final LocalPlayer player, final ItemStack stack) {
         final Class<?> cls = taczOperatorClass();

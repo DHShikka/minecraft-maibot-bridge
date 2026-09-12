@@ -185,6 +185,9 @@ public final class GunTasks {
     public static Task shoot(final String id, final JsonObject params, final long timeoutMs) {
         final String target = Json.str(params, "target", Json.str(params, "entity", "")).trim();
         final int hold = Math.max(1, Math.min(Json.intVal(params, "ticks", DEFAULT_FIRE_TICKS), 200));
+        // 要不要开镜打（右键瞄准）。默认开 —— 开镜更准，而 AI 托管时鼠标是放开的，
+        // 它自己按不了右键，所以由我们代按（走 TaCZ 的 aim 接口）。
+        final boolean wantAim = Json.bool(params, "aim", true);
         return new Task(id, "shoot", params, timeoutMs, true, false) {
             private int ticks;
             private boolean prepared;
@@ -231,6 +234,11 @@ public final class GunTasks {
                     prepared = true;
                     kind = held;
                     ammoBefore = CombatKit.countAmmo(player, kind);
+                    // 开火前先**右键瞄准**（ADS）：枪口更稳、弹道更准。
+                    // 走 TaCZ 的 aim(boolean) 而不是按右键 —— 理由同开火（输入闸门）。
+                    if (kind == CombatKit.Ranged.GUN && wantAim) {
+                        ModHooks.taczAim(player, true);
+                    }
 
                     // ---- 第二步（关键）：**没弹药不许开火**
                     if (ammoBefore <= 0) {
@@ -283,6 +291,10 @@ public final class GunTasks {
                     return null;
                 }
 
+                // 打完收镜（别一直举着）
+                if (kind == CombatKit.Ranged.GUN && wantAim) {
+                    ModHooks.taczAim(player, false);
+                }
                 final JsonObject out = new JsonObject();
                 out.addProperty("weapon", GameUtils.itemId(player.getMainHandItem()));
                 out.addProperty("kind", kind.name().toLowerCase(Locale.ROOT));
@@ -587,6 +599,7 @@ public final class GunTasks {
         final double radius = Math.max(4.0, Json.intVal(params, "radius", 32));
         final int killLimit = Math.max(0, Json.intVal(params, "kills", 0));
         final boolean useAutoAim = Json.bool(params, "autoaim", true);
+        final boolean wantAim = Json.bool(params, "aim", true);
         return new Task(id, "lock_on", params, timeoutMs, true, true) {
             private Entity target;
             private int kills;
@@ -607,16 +620,21 @@ public final class GunTasks {
                             + "）。先 mc_equip 换一把枪再锁敌。");
                 }
 
-                // ---- 第一次进来：给 AutoAim 开锁（装了才有）
-                if (useAutoAim && !autoAimPressed) {
+                // ---- 第一次进来：开镜 + 给 AutoAim 开锁（装了才有）
+                if (!autoAimPressed) {
                     autoAimPressed = true;
-                    final KeyMapping aim = ModHooks.findKeyMapping("key.autoaim.aim", "autoaim");
-                    if (aim != null) {
-                        ModHooks.pressKeyEvent(aim);
-                        ModHooks.holdKey(aim, true);
-                        autoAimNote = "AutoAim 已开锁（" + aim.getName() + "）";
-                    } else {
-                        autoAimNote = "没装 AutoAim，改用模组自己的每 tick 瞄准";
+                    if (wantAim) {
+                        ModHooks.taczAim(player, true);   // 右键瞄准：锁敌期间一直举着
+                    }
+                    if (useAutoAim) {
+                        final KeyMapping aim = ModHooks.findKeyMapping("key.autoaim.aim", "autoaim");
+                        if (aim != null) {
+                            ModHooks.pressKeyEvent(aim);
+                            ModHooks.holdKey(aim, true);
+                            autoAimNote = "AutoAim 已开锁（" + aim.getName() + "）";
+                        } else {
+                            autoAimNote = "没装 AutoAim，改用模组自己的每 tick 瞄准";
+                        }
                     }
                 }
 
@@ -671,15 +689,19 @@ public final class GunTasks {
             }
 
             private TaskResult finish(final LocalPlayer player, final boolean ok, final String why) {
-                // 松开 AutoAim 的锁，别一直锁着
+                // 松开 AutoAim 的锁、收起瞄准，别一直举着
                 final KeyMapping aim = ModHooks.findKeyMapping("key.autoaim.aim", "autoaim");
                 if (aim != null) {
                     ModHooks.holdKey(aim, false);
+                }
+                if (wantAim) {
+                    ModHooks.taczAim(player, false);
                 }
                 final JsonObject out = new JsonObject();
                 out.addProperty("kills", kills);
                 out.addProperty("shots", shots);
                 out.addProperty("filter", filter);
+                out.addProperty("aimed", wantAim);
                 out.addProperty("autoaim", autoAimNote);
                 out.addProperty("magazine", CombatKit.magazine(player.getMainHandItem()));
                 out.addProperty("ammo", CombatKit.countAmmo(player, CombatKit.Ranged.GUN));

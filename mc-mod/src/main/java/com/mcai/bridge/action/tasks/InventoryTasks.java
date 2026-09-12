@@ -134,6 +134,38 @@ public final class InventoryTasks {
         };
     }
 
+    /** 这件东西是不是盔甲（能穿在身上）。 */
+    private static boolean isArmor(final ItemStack stack) {
+        return stack != null && !stack.isEmpty()
+                && stack.getItem() instanceof net.minecraft.world.item.ArmorItem;
+    }
+
+    /** 盔甲槽的中文名（按 Inventory 索引）。 */
+    private static String armorSlotName(final int invIndex) {
+        return switch (invIndex) {
+            case 39 -> "头盔";
+            case 38 -> "胸甲";
+            case 37 -> "护腿";
+            case 36 -> "靴子";
+            default -> "盔甲槽";
+        };
+    }
+
+    /** 这件盔甲该穿在哪个槽位。 */
+    private static String armorSlotOf(final ItemStack stack) {
+        if (stack != null && !stack.isEmpty()
+                && stack.getItem() instanceof final net.minecraft.world.item.ArmorItem armor) {
+            return switch (armor.getEquipmentSlot()) {
+                case HEAD -> "头盔";
+                case CHEST -> "胸甲";
+                case LEGS -> "护腿";
+                case FEET -> "靴子";
+                default -> "盔甲槽";
+            };
+        }
+        return "盔甲槽";
+    }
+
     // ------------------------------------------------------------ 切换物品
 
     /**
@@ -204,13 +236,29 @@ public final class InventoryTasks {
                     return TaskResult.success(out);
                 }
 
-                // ---- 换到护甲槽
-                if (Json.bool(params, "armor", false)) {
+                // ---- 穿装备（盔甲）
+                //
+                // 这一段以前是坏的，真机表现就是**「无法穿戴装备」**：
+                //   · 只有传了 armor=true 才进得来，而 AI 根本不知道要传这个参数；
+                //   · 判据是 `found >= 36 && found <= 39`，那正是**已经穿在身上**的盔甲槽 ——
+                //     也就是说只有「想穿已经穿着的盔甲」才走这里；
+                //   · 动作还是 PICKUP（把盔甲抓到鼠标上），不是穿。
+                // 现在：**自动识别**背包里那件是不是盔甲，然后一次 QUICK_MOVE（shift 点击），
+                // 原版会自己把它放进对应的盔甲槽（头盔/胸甲/护腿/靴子各归各位）。
+                final ItemStack maybeArmor = inv.getItem(found);
+                if (isArmor(maybeArmor) || Json.bool(params, "armor", false)) {
                     if (found >= 36 && found <= 39) {
-                        click(mc, player, toMenuSlot(found), 0, ClickType.PICKUP);
-                        out.addProperty("armorEquipped", true);
+                        out.addProperty("alreadyWorn", true);
+                        out.addProperty("armorSlot", armorSlotName(found));
+                        out.add("item", StateCollector.item(maybeArmor));
                         return TaskResult.success(out);
                     }
+                    click(mc, player, toMenuSlot(found), 0, ClickType.QUICK_MOVE);
+                    out.addProperty("armorEquipped", true);
+                    out.addProperty("armorSlot", armorSlotOf(maybeArmor));
+                    out.add("item", StateCollector.item(maybeArmor));
+                    out.addProperty("note", "已按 shift 点击交给原版归类到盔甲槽（头盔/胸甲/护腿/靴子）。");
+                    return TaskResult.success(out);
                 }
 
                 // ---- 快捷栏内：直接选中

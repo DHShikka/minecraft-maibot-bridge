@@ -472,6 +472,32 @@ public final class ModHooks {
      *
      * @return 调成功没有（没装 TaCZ 就是 false）
      */
+    /**
+     * 往 Forge 事件总线上发一个**鼠标按键事件**（按下+抬起）。
+     *
+     * <p>换弹那次是靠发 {@code InputEvent.Key} 解决的，开镜是同一类问题：
+     * TaCZ 的 {@code AimKey.onAimPress} 监听的是 {@code InputEvent.MouseButton.Post} ——
+     * 就算我们把 {@code AIM_KEY} 按住、也调了 {@code aim(true)}，**没有鼠标事件它这一步就不跑**，
+     * 于是 {@code clientAimingProgress} 不涨、画面永远不透镜（真机现象：效率确实变好了、
+     * 但画面上没有举镜变焦）。</p>
+     *
+     * @param button GLFW 的鼠标键号（左键 0、右键 1、中键 2）
+     */
+    public static boolean postMouseEvent(final int button, final boolean press) {
+        try {
+            net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(
+                    new net.minecraftforge.client.event.InputEvent.MouseButton.Post(
+                            button, press ? org.lwjgl.glfw.GLFW.GLFW_PRESS
+                                          : org.lwjgl.glfw.GLFW.GLFW_RELEASE, 0));
+            return true;
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
+
+    /** 右键的 GLFW 键号。 */
+    public static final int MOUSE_RIGHT = 1;
+
     public static boolean taczAim(final LocalPlayer player, final boolean aiming) {
         // **必须同时把它的瞄准键按住，而且瞄准期间要把鼠标临时抓回窗口。**
         //
@@ -495,6 +521,9 @@ public final class ModHooks {
             }
         }
         holdKey(taczAimKey(), aiming);
+        // **再补一个真正的鼠标按键事件** —— TaCZ 的开镜渲染（clientAimingProgress）
+        // 只有走 onAimPress 才会推进，光有状态没有事件就不透镜。见 postMouseEvent 的注释。
+        postMouseEvent(MOUSE_RIGHT, aiming);
         if (!aiming) {
             // 收镜了：把鼠标还给玩家（托管时本来就该是放开的）
             releaseAimMouse();

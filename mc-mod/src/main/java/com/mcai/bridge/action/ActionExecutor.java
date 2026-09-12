@@ -370,9 +370,8 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
                 || "equip".equals(current.type))) {
             return;   // 正在打 / 正在吃 / 正在换手：别插手
         }
-        if (isBusy()) {
-            return;   // 手上有活
-        }
+        // 注意：「忙不忙」的判断挪到后面了（见下面 isBusy 那段）——
+        // 「闲等」不该挡住吃东西，饿着肚子干等正是最该打断的状态。
         final net.minecraft.client.player.LocalPlayer player = mc.player;
         final float health = player.getHealth();
         final int hunger = player.getFoodData().getFoodLevel();
@@ -394,6 +393,13 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
         }
         final long now = System.currentTimeMillis();
         if (now - lastAutoEatAt < AUTO_EAT_COOLDOWN_MS) {
+            return;
+        }
+        // 「闲等」（wait）直接打断 —— 饿着肚子/带着伤干等没有任何价值；
+        // 真正在干活（挖矿、走远路、合成…）则不打断，等它干完再说。
+        if (current != null && "wait".equals(current.type)) {
+            cancelAll("饿了/受伤了，先吃东西");
+        } else if (isBusy()) {
             return;
         }
         lastAutoEatAt = now;

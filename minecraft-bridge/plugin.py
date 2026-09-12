@@ -1250,7 +1250,7 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
     async def _call(self, action: str, params: dict[str, Any], session_key: str = "",
                     player: str = "", timeout: Optional[float] = None,
-                    skip_allowlist: bool = False) -> dict[str, Any]:
+                    skip_allowlist: bool = False, hard_cap: bool = True) -> dict[str, Any]:
         """统一的动作调用入口：找到客户端 → 下发 → 返回给 LLM 可读的结果。"""
         if self.bridge is None:
             return {"success": False, "content": "Minecraft 桥接插件没有启动（WebSocket 服务端启动失败，请检查端口占用）。"}
@@ -1265,8 +1265,11 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
         if timeout is None:
             timeout = float(self.config.safety.max_action_timeout_seconds)
-        # 压到框架的 RPC 超时以内（见 _MAX_TOOL_WAIT_SECONDS 的说明）
-        timeout = min(float(timeout), self._MAX_TOOL_WAIT_SECONDS)
+        # 压到框架的 RPC 超时以内（见 _MAX_TOOL_WAIT_SECONDS 的说明）。
+        # 脚本例外：它的长短由脚本自己的 maxDurationMs 决定，插件侧不该替它截断
+        # （那种情况下请把框架的工具超时也一起调大，否则框架仍会先报 E_TIMEOUT）。
+        if hard_cap:
+            timeout = min(float(timeout), self._MAX_TOOL_WAIT_SECONDS)
 
         try:
             result = await session.request_action(
@@ -2544,7 +2547,7 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                     _summarize_script(parsed), sorted(used) or "（无）")
 
         outcome = await self._call(P.A_SCRIPT, parsed, player=player, timeout=timeout,
-                                   skip_allowlist=True)
+                                   skip_allowlist=True, hard_cap=False)
         if not outcome.get("success"):
             return outcome
 

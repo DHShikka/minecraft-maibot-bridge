@@ -1239,6 +1239,15 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
     # ============================================================== 工具层
 
+    # 单次工具调用最多让插件等多久（秒）。
+    #
+    # 为什么必须有这个上限：MaiBot 框架给 `plugin.invoke_tool` 的 RPC 超时是 **60 秒**，
+    # 插件等得比它久没有任何意义 —— 到点框架先抛 E_TIMEOUT，连「动作其实还在跑」都传不回去
+    # （真机报错：运行时工具 mcai.minecraft-bridge.mc_follow 执行失败: [E_TIMEOUT] 请求
+    #   plugin.invoke_tool 超时 (60000ms)，而 mc_follow 默认 duration_ms=60000 时会等 80 秒）。
+    # 留 10 秒余量：50 秒还没结束就返回「还在跑」，让 AI 用 mc_task_status 去看进度。
+    _MAX_TOOL_WAIT_SECONDS = 50.0
+
     async def _call(self, action: str, params: dict[str, Any], session_key: str = "",
                     player: str = "", timeout: Optional[float] = None,
                     skip_allowlist: bool = False) -> dict[str, Any]:
@@ -1256,6 +1265,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
         if timeout is None:
             timeout = float(self.config.safety.max_action_timeout_seconds)
+        # 压到框架的 RPC 超时以内（见 _MAX_TOOL_WAIT_SECONDS 的说明）
+        timeout = min(float(timeout), self._MAX_TOOL_WAIT_SECONDS)
 
         try:
             result = await session.request_action(
@@ -1263,6 +1274,20 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                 max_per_second=self.config.safety.max_actions_per_second,
             )
         except ActionError as exc:
+            text = str(exc)
+            # 「等超时」不等于失败：动作在游戏里还在继续跑，只是这一轮工具调用等不到它结束。
+            # 报成错误会让 AI 以为没做成、然后重来一遍（于是排两个跟随）。
+            if "超时" in text or "timeout" in text.lower():
+                return {
+                    "success": True,
+                    "stillRunning": True,
+                    "content": f"{action} 还在跑：等了 {int(timeout)} 秒还没结束，"
+                               f"所以我先把它交回给你。**它没有失败**，游戏里还在继续做；"
+                               f"用 mc_task_status 看进度，想让它停就 mc_stop。"
+                               f"（这类长动作本来就该这么用：下发 → 过一会儿查进度，别一直等。）",
+                    "action": action,
+                    "params": params,
+                }
             return {"success": False, "content": f"动作 {action} 失败：{exc}", "action": action, "params": params}
 
         return {
@@ -1552,10 +1577,13 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                               default=60000),
         ],
     )
-    async def mc_follow(self, target: str, range: int = 3, duration_ms: int = 60000, **kwargs: Any):
+    async def mc_follow(self, target: str, range: int = 3, duration_ms: int = 20000, **kwargs: Any):
+        # 默认跟随时长从 60 秒降到 20 秒：跟随是「长动作」，但一次工具调用不该霸占太久
+        # （框架单次 RPC 只有 60 秒）。想跟更久就隔一会儿再调一次，或者显式传 duration_ms ——
+        # 超过 _MAX_TOOL_WAIT_SECONDS 的那部分会被截断成「还在跑，去看进度」。
         timeout = float(self.config.safety.max_action_timeout_seconds)
         if duration_ms and duration_ms > 0:
-            timeout = min(timeout, duration_ms / 1000.0 + 20.0)
+            timeout = min(timeout, duration_ms / 1000.0 + 10.0)
         return await self._call(P.A_FOLLOW,
                                 {"target": target, "range": range, "durationMs": duration_ms},
                                 timeout=timeout)

@@ -174,6 +174,18 @@ public final class CraftTask extends Task {
         final List<CraftingRecipe> candidates =
                 findCraftingRecipes(mc, player, itemQuery);
         if (candidates.isEmpty()) {
+            // 名字太含糊：一口气匹配到好几个不同的物品 —— 说清楚，让 AI 用完整 ID 重来。
+            // 绝不在这里「替它挑一个」，那正是做出一堆钻石胸甲的原因。
+            if (ambiguousMatches != null && !ambiguousMatches.isEmpty()) {
+                fail("「" + itemQuery + "」这个名字**不够明确**：同时匹配到 "
+                        + ambiguousMatches.size() + " 个不同的物品（"
+                        + String.join("、", ambiguousMatches) + "）。"
+                        + "为了不给你做错东西，我没有动手。"
+                        + "请改用**完整的物品 ID**，而且一套装备是**四次不同的合成** —— "
+                        + "例如钻石头盔 diamond_helmet、钻石胸甲 diamond_chestplate、"
+                        + "钻石护腿 diamond_leggings、钻石靴子 diamond_boots，一个一个来"
+                        + "（做完一件再调一次 mc_craft 做下一件）。");
+            }
             fail("找不到能产出「" + itemQuery + "」的合成配方。"
                     + "可能是名字写错了，或者这个东西压根不能合成（需要用熔炉烧、或者在别的工作台上做）。"
                     + "可以用 mc_recipes 查一下名字对不对，或者用 mc_scan_blocks / mc_inventory 看看手上有什么。");
@@ -394,6 +406,13 @@ public final class CraftTask extends Task {
         out.addProperty("received", after - startCount);
         out.addProperty("timesCrafted", craftedTotal);
         out.addProperty("recipe", recipe == null ? "" : recipe.getId().toString());
+        if (fuzzyPicked != null) {
+            // 名字不是精确 ID，是按模糊匹配找到的唯一物品 —— 必须说清楚，
+            // 否则 AI 会以为「我说的那个名字 = 做出来的这件东西」。
+            out.addProperty("matchedByName", fuzzyPicked);
+            out.addProperty("matchedNote", "物品名「" + itemQuery + "」不是精确 ID，"
+                    + "按模糊匹配找到的是 " + fuzzyPicked + " —— 确认一下是不是你要的那件。");
+        }
         out.add("recipeDetail", recipeInfo);
         if (!planNote.isEmpty()) {
             out.addProperty("note", planNote);
@@ -454,9 +473,26 @@ public final class CraftTask extends Task {
 
     // ============================================================ 配方查找
 
+    /**
+     * 「名字不够明确」时匹配到的候选物品 id。
+     *
+     * <p>只在「没有精确匹配、而且模糊命中了好几个**不同**物品」时才有值 ——
+     * 这种时候宁可报错，也不能随便挑一个做。</p>
+     *
+     * <p>真机事故：让它做一套钻石套，一个含糊的名字同时命中了头盔/胸甲/护腿/靴子，
+     * 而排序是**稳定**的（并列时保持注册表顺序），于是不管要哪一件都默默做出同一个 ——
+     * 最后做了一堆钻石胸甲，而且全程没告诉 AI「我做的是别的物品」。</p>
+     */
+    private List<String> ambiguousMatches;
+
+    /** 这次是**模糊匹配**（名字不是精确 ID）找到的 —— 结果里要说明，免得 AI 以为做对了。 */
+    private String fuzzyPicked;
+
     /** 找到所有能产出目标物品的合成配方，按「材料是否够用」与「是否更容易做」排序。 */
     private List<CraftingRecipe> findCraftingRecipes(
             final Minecraft mc, final LocalPlayer player, final String query) {
+        ambiguousMatches = null;
+        fuzzyPicked = null;
         final RecipeManager manager = mc.level.getRecipeManager();
         final List<CraftingRecipe> all =
                 manager.getAllRecipesFor(RecipeType.CRAFTING);
@@ -477,8 +513,25 @@ public final class CraftTask extends Task {
             }
         }
 
-        final List<CraftingRecipe> pool =
-                !exact.isEmpty() ? exact : fuzzy;
+        final List<CraftingRecipe> pool;
+        if (!exact.isEmpty()) {
+            pool = exact;
+        } else {
+            // 模糊命中：只有**所有候选都是同一个物品**时才敢用。
+            // 否则「钻石」「diamond」这种含糊的名字会把 diamond_chestplate / diamond_helmet /
+            // diamond_leggings / diamond_boots 全捞进来，稳定排序又把顺序固定成注册表顺序，
+            // 于是「不管要哪件都做出同一个」—— 这就是那堆钻石胸甲的来源。
+            final java.util.LinkedHashSet<String> outputs = new java.util.LinkedHashSet<>();
+            for (final CraftingRecipe r : fuzzy) {
+                outputs.add(GameUtils.itemId(r.getResultItem(mc.level.registryAccess())));
+            }
+            if (outputs.size() != 1) {
+                ambiguousMatches = new ArrayList<>(outputs);
+                return List.of();
+            }
+            pool = fuzzy;
+            fuzzyPicked = outputs.iterator().next();
+        }
 
         // 优先：材料够 > 2x2 能做（不用找工作台）
         pool.sort(Comparator

@@ -822,9 +822,13 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
                 requirePermission(BridgeConfig.allowBreak, "破坏方块（allow.breakBlocks�?");
                 yield MineTask.single(id, params, timeoutMs);
             }
+            // 觅食：饿了又没吃的时自己去找（干草块→面包 / 打动物 / 翻宝箱）
+            case "forage" -> {
+                requirePermission(BridgeConfig.allowBreak, "觅食（allow.breakBlocks�?");
+                yield com.mcai.bridge.action.tasks.ForageTask.create(id, params, timeoutMs);
+            }
             case "mine_blocks" -> {
-                requirePermission(BridgeConfig.allowBreak, "破坏方块（allow.breakBlocks�?");
-                // 装了 Baritone 就让它的 #mine 去挖（数量在前：`#mine 64 dirt`）。
+                requirePermission(BridgeConfig.allowBreak, "破坏方块（allow.breakBlocks�?");                // 装了 Baritone 就让它的 #mine 去挖（数量在前：`#mine 64 dirt`）。
                 // 它比自带实现稳：挖穿、搭桥、绕岩浆都会自己处理。
                 final Task byBaritone = com.mcai.bridge.action.tasks.BaritoneTasks
                         .mineTask(id, params, timeoutMs);

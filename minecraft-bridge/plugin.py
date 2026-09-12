@@ -1672,6 +1672,34 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                                 timeout=float(self.config.safety.max_action_timeout_seconds))
 
     @Tool(
+        "mc_forage",
+        brief_description="自己去找吃的：干草块做面包 / 打动物拿肉 / 翻宝箱 —— 一条条试到有吃的为止",
+        detailed_description=(
+            "**饿了又没食物时用它**，模组会自己按「最快能吃到嘴」的顺序试三条路：\n"
+            "① **干草块 → 面包**（首选）：找到干草块 → 走过去挖掉 → 合成小麦 → 合成面包；\n"
+            "② **打动物**：附近有牛/猪/鸡/羊就杀掉，拿生肉（生肉能吃，烤熟回得更多）；\n"
+            "③ **翻宝箱**：走到箱子旁打开它，把里面的东西报给你看。\n"
+            "每条路走不通会自动退到下一条（附近没干草块 / 够不着 / 打不到），"
+            "全都不行才失败，并说明每条为什么没成。\n"
+            "结果里的 steps 是它一路干了什么，breadNow / meat 是最后手上有多少吃的。\n"
+            "拿到吃的之后不用你管：饿了模组会自己吃（[combat] autoEat），而且挑营养最高的。\n"
+            "参数说明：\n"
+            "- bread：integer，可选。想做几个面包，默认 6。\n"
+            "- player：string，可选。指定游戏客户端。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="bread", param_type=ToolParamType.INTEGER,
+                              description="想做几个面包，默认 6", required=False, default=6),
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="游戏内玩家名", required=False, default=""),
+        ],
+    )
+    async def mc_forage(self, bread: int = 6, player: str = "", **kwargs: Any):
+        return await self._call(P.A_FORAGE, {"bread": max(1, int(bread))},
+                                player=player,
+                                timeout=float(self.config.safety.max_action_timeout_seconds))
+
+    @Tool(
         "mc_place",
         brief_description="在指定坐标放置手上的方块（支持 \"~\" 相对坐标）",
         detailed_description=(

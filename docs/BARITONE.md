@@ -264,3 +264,84 @@ Baritone 有 ~5 万行，本项目只取了最核心的骨架。**明确没做**
 
 > 任务层（脚本、卡死检测）参考的是另一个项目 **Altoclef**，见 [ALTOCLEF.md](ALTOCLEF.md)。
 > 它是 MIT（本项目也是 MIT），所以那篇的边界和这篇不一样，别混着看。
+
+
+---
+
+## 附：Baritone 指令全表（整理自 mcmod 教程，供选型参考）
+
+> 来源：<https://www.mcmod.cn/post/3666.html>（[BT] Baritone，教程作者 sand_233）。
+> **各版本指令有差异**，下面以 1.10+ 为准。
+
+【寻路/移动】
+#goto <x> <y> <z>   去指定坐标（支持 ~ 相对坐标）；#goto <方块ID> 去最近的该方块；
+                    #goto <y> 走到指定高度；#goto <x> <z> 去该坐标最近的地面
+#path               接近已设定的目标点（配合 #goal）；#invert 反过来远离目标
+#goal <x y z>       设目标点（可被 #path 接近）；#goal clear 清除；
+                    #goal <y> 水平面无限远；#goal <x> <z> 无限 y 轴
+#thisway            朝准心方向（正东南西北）设一个无限远目标
+#axis               在 x=0,z=0 设 y 无限目标
+#eta / #proc        剩余时间 / 当前任务信息
+#come               （需 tweakeroo 灵魂出窍）走向摄像机位置
+#surface / #top     从矿洞往上走到露天
+#tunnel [高 宽 深]   朝准心方向挖 1x2 隧道；给参数则挖指定尺寸的方形隧道
+#explore [x z]      探索区块（点地图用）
+
+【挖矿/农活】
+#mine <方块ID>      挖已加载区块内的该方块，**会自动收集掉落物**
+#farm [范围]        游走并耕种/采摘作物（甘蔗保留根部一格）
+#find <方块ID>      在模组缓存过的区块里找该方块
+
+【任务控制】
+#cancel / #c / #stop   取消当前任务（#forcecancel 强制取消全部）
+#pause / #resume / #r  暂停 / 继续；#paused 查询有没有被暂停的
+#saveall / #reloadall  保存 / 重新载入本世界的缓存
+                       （**正常退出游戏会清掉未保存的任务缓存**）
+#repack / #render      重新加载附近区块
+#version               看模组版本
+
+【跟随】
+#follow entities                跟最近的实体（死后自动换下一个）
+#follow entity <名1> <名2>...    跟指定生物（如 pig、horse）
+#follow players                 跟最近玩家
+#follow player <玩家名>         跟指定玩家
+
+【路径点/家】
+#wp l                    列出路径点（聊天栏可点击操作）
+#wp s [标签] [名字] [x y z]  保存路径点（标签要按 tab 补全）
+#wp d / #wp restore      删除 / 恢复删除
+#wp g / #wp goto         设为目标 / 直接出发
+#sethome / #home         快捷保存 / 前往名为 HOME 的路径点
+
+【选区（繁重方块操作，很好用）】
+#sel 1 / #sel 2 [x y z]  设两个顶角（必须先 1 后 2）
+#sel f <方块ID>          区域内实心填充（用 air 就是挖空）
+#sel w / #sel shl        只砌墙 / 连地板天花板一起铺
+#sel r <旧> <新>         把区域内旧方块替换成新方块
+#sel c / #sel u          清除全部框选 / 撤回一步
+#sel expand|contract|move <a|n|o> <方向> <数量>   扩大/缩小/平移选区
+
+【蓝图（需投影模组）】
+#build <文件名.litematica> [x y z]   按蓝图建造
+#litematica [序号]                   读取已放置的投影并建造
+                                     （1.10 以下版本是 #schematica，只认 .schematic）
+
+【配置】
+#set / #reset / #modified   查看、修改、重置模组配置
+#help <指令> / #            看内置指令说明
+
+### 坑
+
+本模组**寻路时会受到流体干扰**，而且**不会使用船只和鞘翅**，会优先避开流体 ——
+所以让它自己跑长距离/跨水时，要警惕它绕远路或者被怪打死。
+
+**完全退出游戏会清除世界内未保存的任务缓存**（模组缓存默认不存盘），
+需要保留就 #saveall。所以让 Baritone 干长活时，别随手关游戏。
+
+聊天栏里单独输入 `home`、`sethome`、`?`（英文问号）会被模组截走当指令、**发不出去**；
+中文问号不受影响。我们要发这类内容给玩家看时，前面得加点别的东西。
+
+`#sel 1/2` 的框选**不能被 #c 清除**，得用 `#sel c`；顶角和 #goal 目标点也不一样。
+
+各版本指令有差异（1.10 前后投影指令不同、1.20 的新版还多了 #elytra 鞘翅寻路），
+换版本后要重新确认。

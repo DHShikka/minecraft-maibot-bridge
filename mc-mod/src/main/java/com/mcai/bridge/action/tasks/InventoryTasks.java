@@ -80,6 +80,17 @@ public final class InventoryTasks {
                     if (stack.isEmpty()) {
                         fail("手上没有物品，无法长按使用");
                     }
+                    // 关键：**真的把使用键按住**。
+                    // 吃东西要持续 1.6 秒、拉弓要 1 秒，而下一 tick 的
+                    // Minecraft.handleKeybinds() 一旦发现「使用键没按下」就会替我们松手 ——
+                    // 服务端看到的蓄力永远是 0，表现就是「动作报成功，但什么都没发生」。
+                    // 真机现象：自动进食的日志刷了好几次「自动进食：牛排」，食物一颗没少；
+                    // 弓那边也是一样的病（fired:true 但 ammoUsed:0）。
+                    try {
+                        mc.options.keyUse.setDown(true);
+                    } catch (final Throwable ignored) {
+                        // 忽略
+                    }
                     if (elapsed == 0L || !player.isUsingItem()) {
                         final InteractionResult result = mc.gameMode.useItem(player, hand);
                         if (result.shouldSwing()) {
@@ -89,10 +100,16 @@ public final class InventoryTasks {
                 }
                 if (elapsed >= holdMs && !released) {
                     released = true;
+                    try {
+                        mc.options.keyUse.setDown(false);
+                    } catch (final Throwable ignored) {
+                        // 忽略
+                    }
                     mc.gameMode.releaseUsingItem(player);
                     final JsonObject out = new JsonObject();
                     out.addProperty("item", GameUtils.itemId(player.getItemInHand(hand)));
                     out.addProperty("heldMs", elapsed);
+                    out.addProperty("note", "按住使用了 " + elapsed + " 毫秒（吃东西/拉弓这类要持续按住才生效）。");
                     return TaskResult.success(out);
                 }
                 return null;
@@ -101,6 +118,11 @@ public final class InventoryTasks {
             @Override
             protected void onCancel(final Minecraft mc) {
                 if (mc.player != null && mc.gameMode != null) {
+                    try {
+                        mc.options.keyUse.setDown(false);
+                    } catch (final Throwable ignored) {
+                        // 忽略
+                    }
                     mc.gameMode.releaseUsingItem(mc.player);
                 }
             }

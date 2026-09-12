@@ -473,6 +473,32 @@ public final class ModHooks {
      * @return 调成功没有（没装 TaCZ 就是 false）
      */
     public static boolean taczAim(final LocalPlayer player, final boolean aiming) {
+        // **必须同时把它的瞄准键按住，而且瞄准期间要把鼠标临时抓回窗口。**
+        //
+        // 反编译 AimKey 才知道它为什么这么难搞：
+        //   开镜：onAimPress(InputEvent$MouseButton$Post) —— 要**真正的鼠标按键事件**，
+        //         而且第一句就是 InputExtraCheck.isInGame()（要求鼠标锁在窗口里 + 窗口在前台）；
+        //   松开：onAimHoldingPreInput(ClientTickEvent) —— 每 tick 看 AIM_KEY 没按住就 aim(false)。
+        // 而「AI 托管」的设计就是把鼠标放开，于是这两条路全被闸门挡死 —— 光改状态不产生鼠标
+        // 事件，画面上永远不开镜（真机现象：调了 aim(true)、键也按住了，游戏里就是不举镜）。
+        //
+        // 所以这里做一个**临时抓回鼠标**：AI 要开镜的这段时间鼠标是锁住的，收镜时还给玩家。
+        // 代价很小（开镜通常几百毫秒到几秒），换来的是真的能看到/生效的开镜。
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc != null && mc.mouseHandler != null) {
+            try {
+                if (aiming && !mc.mouseHandler.isMouseGrabbed() && mc.screen == null) {
+                    mc.mouseHandler.grabMouse();
+                }
+            } catch (final Throwable ignored) {
+                // 忽略
+            }
+        }
+        holdKey(taczAimKey(), aiming);
+        if (!aiming) {
+            // 收镜了：把鼠标还给玩家（托管时本来就该是放开的）
+            releaseAimMouse();
+        }
         final Class<?> cls = taczOperatorClass();
         final Object op = taczOperator(player);
         if (cls == null || op == null) {
@@ -484,6 +510,31 @@ public final class ModHooks {
         } catch (final Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * 收镜后把鼠标还回去（AI 托管时本来就该是放开的）。
+     *
+     * <p>{@link Takeover#tick} 每 tick 也会把鼠标放开，所以这里只是让它立刻恢复，
+     * 不用等下一 tick。</p>
+     */
+    public static void releaseAimMouse() {
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.mouseHandler == null) {
+            return;
+        }
+        try {
+            if (Takeover.isActive() && mc.mouseHandler.isMouseGrabbed() && mc.screen == null) {
+                mc.mouseHandler.releaseMouse();
+            }
+        } catch (final Throwable ignored) {
+            // 忽略
+        }
+    }
+
+    /** TaCZ 的瞄准键（右键）。 */
+    public static KeyMapping taczAimKey() {
+        return findKeyMapping("key.tacz.aim.desc", "key.tacz.aim", "瞄准");
     }
 
     /** 现在是不是在瞄准状态（给结果里报一下，便于确认 ADS 真开了）。 */

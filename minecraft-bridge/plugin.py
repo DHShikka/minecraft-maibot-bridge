@@ -2107,14 +2107,23 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                               description="丢弃数量，0 表示整叠", required=False, default=0),
         ],
     )
-    async def mc_drop(self, item: str = "", slot: Any = None, count: int = 0, **kwargs: Any):
+    async def mc_drop(self, item: str = "", slot: Any = None, count: int = 0,
+                      junk: bool = False, free: int = 0, keep_value: int = 60, **kwargs: Any):
         params: dict[str, Any] = {"count": count}
+        if junk or int(free) > 0:
+            # 腾地方模式：丢掉**最不值钱的**，给贵重物品腾位置。
+            # 贵重品（钻石/下界合金/末影之眼/潜影盒…）默认一件不动 —— 见模组里的价值表。
+            params["junk"] = True
+            params["free"] = max(1, int(free) or 1)
+            params["keepValue"] = max(0, int(keep_value))
         if item:
             params["item"] = item
         if slot is not None:
             params["slot"] = int(slot)
-        if not item and slot is None:
-            return {"success": False, "content": "请提供 item（物品名）或 slot（槽位）。"}
+        if not item and slot is None and not params.get("junk"):
+            return {"success": False,
+                    "content": "请提供 item（物品名）或 slot（槽位）；"
+                               "或者用 junk=true / free=N 让它自己丢最不值钱的腾地方。"}
         return await self._call(P.A_DROP, params, timeout=15.0)
 
     @Tool(

@@ -134,9 +134,60 @@ public final class InventoryTasks {
         };
     }
 
+    /**
+     * 物品的「价值分」：越大越该留。
+     *
+     * <p>故意用**关键词近似**而不是完整物品表 —— 装了什么模组都能凑合判断，
+     * 而且这里只需要「排序」不需要精确值。判断失误的代价不对称：
+     * 把值钱的当垃圾丢了很糟，把垃圾当值钱的留着只是占地方，
+     * 所以阈值默认定在 60（低于 60 才允许丢），宁可少丢。</p>
+     */
+    private static int itemValue(final ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return 0;
+        }
+        final String path = GameUtils.shortId(GameUtils.itemId(stack));
+        if (hits(path, "netherite", "diamond", "emerald", "ancient_debris", "shulker", "totem",
+                "elytra", "nether_star", "dragon_egg", "beacon", "enchanted_golden", "ender_eye",
+                "ender_pearl", "blaze_rod", "ghast_tear", "wither", "trident", "heart_of_the_sea",
+                "nautilus", "echo_shard", "disc_fragment")) {
+            return 100;
+        }
+        if (hits(path, "iron", "gold", "copper", "redstone", "lapis", "quartz", "amethyst",
+                "coal", "raw_", "ingot", "nugget", "gunpowder", "glowstone", "obsidian", "crying")) {
+            return 60;
+        }
+        if (hits(path, "sword", "pickaxe", "axe", "shovel", "hoe", "helmet", "chestplate",
+                "leggings", "boots", "bow", "crossbow", "arrow", "shield", "fishing_rod", "book",
+                "potion", "bucket", "flint_and_steel", "shears", "torch")) {
+            return 55;
+        }
+        if (stack.isEdible()) {
+            return 45;   // 食物留着吃
+        }
+        if (hits(path, "dirt", "gravel", "sand", "cobblestone", "stone", "andesite", "diorite",
+                "granite", "deepslate", "tuff", "calcite", "netherrack", "end_stone", "leaves",
+                "sapling", "seed", "kelp", "vine", "snow", "ice", "clay", "flint", "stick",
+                "rotten_flesh", "poisonous_potato", "spider_eye", "bone", "string", "feather",
+                "egg", "leather", "paper", "sugar_cane", "cactus", "grass", "fern", "moss",
+                "azalea", "root", "petal", "mushroom", "wheat")) {
+            return 5;
+        }
+        return 25;
+    }
+
+    /** 物品 id 里有没有这些关键词（任一命中即可）。 */
+    private static boolean hits(final String path, final String... keywords) {
+        for (final String k : keywords) {
+            if (path.contains(k)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 这件东西是不是盔甲（能穿在身上）。 */
-    private static boolean isArmor(final ItemStack stack) {
-        return stack != null && !stack.isEmpty()
+    private static boolean isArmor(final ItemStack stack) {        return stack != null && !stack.isEmpty()
                 && stack.getItem() instanceof net.minecraft.world.item.ArmorItem;
     }
 
@@ -292,6 +343,72 @@ public final class InventoryTasks {
                     fail("玩家不存在");
                 }
                 final Inventory inv = player.getInventory();
+
+                // ---- 腾地方模式：背包满了要捡贵重物品 —— **丢掉最不值钱的**。
+                //
+                // 判定用一张粗略的价值表（关键词近似，不可靠但够用）：
+                //   100 = 钻石/下界合金/末影之眼/潜影盒/图腾… → **绝对不丢**
+                //    60 = 铁/金/红石/青金石/黑曜石/粗矿…
+                //    55 = 工具/武器/盔甲/弓箭/书/药水/桶…
+                //    45 = 食物（留着吃）
+                //     5 = 泥土/沙砾/圆石/树叶/树苗/腐肉/骨头…（优先丢这些）
+                // 另外**永不丢**：身上穿着的盔甲、副手、当前手持那一格。
+                if (Json.bool(params, "junk", false) || Json.has(params, "free")) {
+                    final int want = Math.max(1, Math.min(Json.intVal(params, "free", 1), 36));
+                    final int minValue = Json.intVal(params, "keepValue", 60);
+                    final java.util.List<Integer> order = new java.util.ArrayList<>();
+                    for (int i = 0; i < 36; i++) {
+                        final ItemStack s = inv.getItem(i);
+                        if (s.isEmpty() || i == inv.selected) {
+                            continue;
+                        }
+                        if (itemValue(s) < minValue) {
+                            order.add(i);
+                        }
+                    }
+                    order.sort(java.util.Comparator.comparingInt(i -> itemValue(inv.getItem(i))));
+
+                    int freeNow = 0;
+                    for (int i = 0; i < 36; i++) {
+                        if (inv.getItem(i).isEmpty()) {
+                            freeNow++;
+                        }
+                    }
+                    final com.google.gson.JsonArray dropped = new com.google.gson.JsonArray();
+                    int need = want - freeNow;
+                    for (final int slotIdx : order) {
+                        if (need <= 0) {
+                            break;
+                        }
+                        final ItemStack s = inv.getItem(slotIdx);
+                        if (s.isEmpty()) {
+                            continue;
+                        }
+                        final JsonObject one = new JsonObject();
+                        one.addProperty("slot", slotIdx);
+                        one.addProperty("item", GameUtils.itemId(s));
+                        one.addProperty("count", s.getCount());
+                        one.addProperty("value", itemValue(s));
+                        dropped.add(one);
+                        click(mc, player, toMenuSlot(slotIdx), 1, ClickType.THROW);
+                        need--;
+                    }
+                    final JsonObject out = new JsonObject();
+                    out.add("dropped", dropped);
+                    out.addProperty("slotsFreeBefore", freeNow);
+                    out.addProperty("droppedStacks", dropped.size());
+                    out.addProperty("keepValue", minValue);
+                    if (dropped.isEmpty()) {
+                        out.addProperty("note", need > 0
+                                ? "没东西可丢：背包里剩下的都是值钱的（价值 ≥ " + minValue
+                                  + "），或者只有你手上/身上那几件。要么先找个箱子存起来。"
+                                : "已经有 " + freeNow + " 个空格，不用丢东西。");
+                    } else {
+                        out.addProperty("note", "丢掉了 " + dropped.size() + " 摞最不值钱的，"
+                                + "腾出位置放贵重物品（价值 ≥ " + minValue + " 的一件没动）。");
+                    }
+                    return TaskResult.success(out);
+                }
 
                 int slot = Json.has(params, "slot") ? Json.intVal(params, "slot", -1) : -1;
                 if (slot < 0) {

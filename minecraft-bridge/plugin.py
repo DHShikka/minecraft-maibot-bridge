@@ -2650,13 +2650,19 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                 names = "、".join(str((s.get("item") or {}).get("name")) for s in food_hits[:4])
                 lines.append(f"身上有吃的：{names}")
             else:
-                lines.append("⚠ 背包里没有一点吃的。获取办法（挑一个去做）："
-                             "①**干草块**（hay_block，村庄/平原常见）拆成 9 小麦 → 3 小麦合成 1 面包；"
-                             "②**找宝箱**（村庄房屋、地牢、废弃矿井）：mc_scan_blocks 找 chest 再 mc_use_on_block 打开；"
-                             "③**打动物**（牛/猪/鸡/羊）：mc_scan_entities 找 cow 之类 → mc_attack → "
-                             "掉生肉，再用 mc_smelt 烤熟（生鸡肉会食物中毒，生牛肉回得少）；"
-                             "④**种地**：小麦种子 + 锄头，周期长，当长期方案。"
-                             "手里没吃的就别硬扛——先 mc_state 看饥饿值，低了优先去弄吃的。")
+                lines.append("⚠ 背包里没有一点吃的 —— 按顺序试下面三条（都是现成工具能直接做的）：\n"
+                             "  ① **干草块→面包**（最快，村庄/平原常见）：\n"
+                             "     mc_scan_blocks block=hay_block radius=32 → mc_mine_blocks block=hay_block count=2\n"
+                             "     → mc_craft item=wheat（1 个干草块 = 9 小麦）→ mc_craft item=bread count=6\n"
+                             "     （3 小麦 = 1 面包，6 个面包够吃很久）\n"
+                             "  ② **翻宝箱**（村庄房屋/地牢/废弃矿井里常有面包、熟肉、苹果）：\n"
+                             "     mc_scan_blocks block=chest radius=48 → mc_move_to 到箱子旁\n"
+                             "     → mc_use_on_block 打开它（读结果里的容器内容，有吃的就拿）\n"
+                             "  ③ **打动物**（牛/猪/鸡/羊，会掉生肉）：\n"
+                             "     mc_scan_entities type=cow filter=passive radius=32 → mc_attack 杀掉\n"
+                             "     → mc_inventory 看掉落 → **mc_smelt 烤熟**（生鸡肉会食物中毒，生牛肉回得少）\n"
+                             "  ④ 长期方案：小麦种子 + 锄头种地；或者养几头牛。\n"
+                             "  饿着肚子别硬扛：饥饿值低了先去做饭，挖矿/赶路都更慢也更危险。")
         else:
             lines.append("背包是空的。")
 

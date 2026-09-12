@@ -554,6 +554,198 @@ public final class GunTasks {
         return best;
     }
 
+    // ------------------------------------------------------------------ 连续锁敌
+
+    /**
+     * {@code lock_on}：**连续锁敌扫射**。
+     *
+     * <p>和 {@code shoot} 的区别：shoot 是「打一梭子就收工」，这个是**一直打下去**，
+     * 而且自己管三件事：</p>
+     *
+     * <ol>
+     *   <li><b>目标死了就换下一个</b> —— 每 tick 检查当前目标还在不在，不在就重新挑最近的有效目标；</li>
+     *   <li><b>弹匣空了自动换弹</b> —— 不用外面再下一轮 reload；</li>
+     *   <li><b>顺手给 AutoAim 开锁</b>（装了的话）—— 见下面。</li>
+     * </ol>
+     *
+     * <h2>为什么要配合 AutoAim（{@code [AA] 自动瞄准}）</h2>
+     *
+     * <p>我们自己的「瞄准」是把镜头瞬间掰到目标眼睛上（每 tick 一次），打移动目标时够用；
+     * 但 AutoAim 做得更细：**瞄的是头部**、能防隔墙、有黑白名单和最远距离，
+     * 而且它「按准心最近锁定」模式下**目标不死就不换锁定** —— 这才是真正的连续锁敌。</p>
+     *
+     * <p>它是纯客户端模组、无前置、官方联动 TaCZ，按键名从它的语言文件里挖到是
+     * {@code key.autoaim.aim}。这里用我们那套**按键软依赖**去按它（没装就跳过，
+     * 不构成编译期依赖）—— 于是：**锁敌交给 AutoAim，开火交给 TaCZ 接口**。</p>
+     *
+     * <p>参数：{@code target}（{@code hostile} 只打敌对、{@code any} 打任何生物、
+     * 或者具体类型名如 {@code slime}，默认 hostile）、{@code radius}（警戒半径，默认 32）、
+     * {@code kills}（打够几个就收工，0=不限）、{@code autoaim}（false 可关掉开锁）。</p>
+     */
+    public static Task lockOn(final String id, final JsonObject params, final long timeoutMs) {
+        final String filter = Json.str(params, "target", "hostile").trim().toLowerCase(Locale.ROOT);
+        final double radius = Math.max(4.0, Json.intVal(params, "radius", 32));
+        final int killLimit = Math.max(0, Json.intVal(params, "kills", 0));
+        final boolean useAutoAim = Json.bool(params, "autoaim", true);
+        return new Task(id, "lock_on", params, timeoutMs, true, true) {
+            private Entity target;
+            private int kills;
+            private int shots;
+            private long reloadedAt;
+            private boolean autoAimPressed;
+            private String autoAimNote = "";
+            private final JsonObject lastShot = new JsonObject();
+
+            @Override
+            protected TaskResult onTick(final Minecraft mc) {
+                final LocalPlayer player = mc.player;
+                if (player == null || mc.level == null) {
+                    fail("玩家或世界不存在");
+                }
+                if (CombatKit.rangedKind(player.getMainHandItem()) != CombatKit.Ranged.GUN) {
+                    fail("手上不是枪（现在拿着 " + GameUtils.itemId(player.getMainHandItem())
+                            + "）。先 mc_equip 换一把枪再锁敌。");
+                }
+
+                // ---- 第一次进来：给 AutoAim 开锁（装了才有）
+                if (useAutoAim && !autoAimPressed) {
+                    autoAimPressed = true;
+                    final KeyMapping aim = ModHooks.findKeyMapping("key.autoaim.aim", "autoaim");
+                    if (aim != null) {
+                        ModHooks.pressKeyEvent(aim);
+                        ModHooks.holdKey(aim, true);
+                        autoAimNote = "AutoAim 已开锁（" + aim.getName() + "）";
+                    } else {
+                        autoAimNote = "没装 AutoAim，改用模组自己的每 tick 瞄准";
+                    }
+                }
+
+                // ---- 弹匣空了就换弹（不用外面再管）
+                final int mag = CombatKit.magazine(player.getMainHandItem());
+                if (mag <= 0) {
+                    if (CombatKit.countAmmo(player, CombatKit.Ranged.GUN) <= 0) {
+                        return finish(player, true, "子弹打光了（背包里也没有备弹）。");
+                    }
+                    if (System.currentTimeMillis() - reloadedAt > 3000L) {
+                        reloadedAt = System.currentTimeMillis();
+                        ModHooks.taczReload(player);
+                    }
+                    return null;
+                }
+
+                // ---- 目标死了就重新挑一个（**在这里也要计数**：
+                // 以前只在开火那一步判 `!target.isAlive()`，结果目标死在上一次判定的间隙里时，
+                // 击杀数就漏掉了 —— 真机出现过「打了 18 发、目标也没了，但 kills 还是 0」）
+                if (target != null && !target.isAlive()) {
+                    kills++;
+                    target = null;
+                }
+                if (target == null) {
+                    if (killLimit > 0 && kills >= killLimit) {
+                        return finish(player, true, "打够了 " + kills + " 个。");
+                    }
+                    target = pickTarget(mc, player, filter, radius);
+                    if (target == null) {
+                        return finish(player, true, "附近（" + Math.round(radius) + " 格内）没有可打的目标了，"
+                                + "这一轮打了 " + kills + " 个。");
+                    }
+                }
+
+                // ---- 瞄（我们自己每 tick 也瞄一次；AutoAim 在的话它会把镜头咬得更死）
+                GameUtils.lookAt(player, aimPoint(target));
+
+                // ---- 开火（TaCZ 内部有射速冷却，每 tick 调一次就是全自动）
+                final String result = ModHooks.taczShoot(player);
+                if (result == null) {
+                    fail("调不动枪械模组的开枪接口（没装 TaCZ？）。");
+                }
+                lastShot.addProperty("taczResult", result);
+                if ("SUCCESS".equals(result)) {
+                    shots++;
+                }
+                if (!target.isAlive()) {
+                    kills++;
+                    target = null;
+                }
+                return null;
+            }
+
+            private TaskResult finish(final LocalPlayer player, final boolean ok, final String why) {
+                // 松开 AutoAim 的锁，别一直锁着
+                final KeyMapping aim = ModHooks.findKeyMapping("key.autoaim.aim", "autoaim");
+                if (aim != null) {
+                    ModHooks.holdKey(aim, false);
+                }
+                final JsonObject out = new JsonObject();
+                out.addProperty("kills", kills);
+                out.addProperty("shots", shots);
+                out.addProperty("filter", filter);
+                out.addProperty("autoaim", autoAimNote);
+                out.addProperty("magazine", CombatKit.magazine(player.getMainHandItem()));
+                out.addProperty("ammo", CombatKit.countAmmo(player, CombatKit.Ranged.GUN));
+                out.addProperty("lastShot", lastShot.toString());
+                out.addProperty("note", why);
+                return ok ? TaskResult.success(out) : TaskResult.fail(why);
+            }
+
+            @Override
+            protected void onCancel(final Minecraft mc) {
+                ModHooks.releaseAll();
+            }
+
+            @Override
+            public String detail() {
+                return "连续锁敌（已打 " + kills + " 个" + (target == null ? "" :
+                        "，当前目标 " + GameUtils.entityName(target)) + "）";
+            }
+
+            /**
+             * **关掉卡死看门狗。**
+             *
+             * <p>锁敌扫射的表现就是「站着不动一直开枪」—— 位置不变、方块不变，看门狗只看到
+             * 「24 秒没有任何进展」，于是判成卡死掐掉（真机原话：
+             * {@code 卡住了：最近约 24 秒既没有移动，也没有任何进展（连续锁敌（已打 0 个…））}）。</p>
+             *
+             * <p>这个任务本来就不该靠「有没有移动」判死活：它的进度是击杀数，
+             * 由 kills/killLimit 与「没目标了」两个条件自己收尾。</p>
+             */
+            @Override
+            public boolean watchdogApplies() {
+                return false;
+            }
+        };
+    }
+
+    /** 挑一个能打的目标：按 filter 决定打谁，取最近的那个，且要过视线/黑名单筛选。 */
+    private static Entity pickTarget(final Minecraft mc, final LocalPlayer player,
+                                    final String filter, final double radius) {
+        Entity best = null;
+        double bestDist = radius * radius;
+        for (final Entity entity : mc.level.entitiesForRendering()) {
+            if (entity == player || !entity.isAlive() || !(entity instanceof LivingEntity)) {
+                continue;
+            }
+            if ("hostile".equals(filter)
+                    && !"HOSTILE".equals(GameUtils.entityCategory(entity))) {
+                continue;
+            }
+            if (!"hostile".equals(filter) && !"any".equals(filter)
+                    && !GameUtils.entityTypeId(entity).toLowerCase(Locale.ROOT).contains(filter)
+                    && !GameUtils.entityName(entity).toLowerCase(Locale.ROOT).contains(filter)) {
+                continue;
+            }
+            if (!CombatKit.isValidTarget(mc, player, entity)) {
+                continue;
+            }
+            final double d = player.distanceToSqr(entity);
+            if (d < bestDist) {
+                bestDist = d;
+                best = entity;
+            }
+        }
+        return best;
+    }
+
     /** 保留：某件物品是不是枪（给别处复用）。 */
     public static boolean isGun(final ItemStack stack) {
         return ModHooks.isGun(stack);

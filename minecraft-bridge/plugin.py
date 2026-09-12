@@ -1746,6 +1746,43 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                                 timeout=float(self.config.safety.max_action_timeout_seconds))
 
     @Tool(
+        "mc_lock_on",
+        brief_description="连续锁敌扫射：目标死了自动换下一个、弹匣空了自动换弹，一直打下去",
+        detailed_description=(
+            "**拿着枪时用它清场**，比反复调 mc_shoot 省事得多。它自己管三件事：\n"
+            "① 目标死了 / 失去目标 → 自动挑下一个最近的有效目标；\n"
+            "② 弹匣空了 → 自动换弹（背包里有同口径子弹就行）；\n"
+            "③ 装了 [AA] 自动瞄准（AutoAim）就顺手给它开锁 —— 锁敌交给它（瞄头、防隔墙、"
+            "目标不死不换），开火交给枪械接口，这是最稳的组合；没装就用模组自己的每 tick 瞄准。\n"
+            "结束条件：打够 kills 个、或者范围内没有可打的目标了（结果里带 kills / shots）。\n"
+            "参数说明：\n"
+            "- target：string，可选。hostile（只打敌对，默认）/ any（任何生物）/ 具体类型名（如 slime）。\n"
+            "- radius：integer，可选。警戒半径，默认 32 格。\n"
+            "- kills：integer，可选。打够几个就收工，0 = 不限（打到没目标为止）。\n"
+            "- autoaim：boolean，可选。是否给 AutoAim 开锁，默认 true。\n"
+            "- player：string，可选。指定游戏客户端。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="target", param_type=ToolParamType.STRING,
+                              description="hostile（敌对，默认）/ any（任何生物）/ 类型名如 slime",
+                              required=False, default="hostile"),
+            ToolParameterInfo(name="radius", param_type=ToolParamType.INTEGER,
+                              description="警戒半径，默认 32", required=False, default=32),
+            ToolParameterInfo(name="kills", param_type=ToolParamType.INTEGER,
+                              description="打够几个收工，0=不限", required=False, default=0),
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="游戏内玩家名", required=False, default=""),
+        ],
+    )
+    async def mc_lock_on(self, target: str = "hostile", radius: int = 32, kills: int = 0,
+                         player: str = "", **kwargs: Any):
+        return await self._call(P.A_LOCK_ON,
+                                {"target": str(target).strip() or "hostile",
+                                 "radius": max(4, int(radius)), "kills": max(0, int(kills))},
+                                player=player,
+                                timeout=float(self.config.safety.max_action_timeout_seconds))
+
+    @Tool(
         "mc_learn",
         brief_description="把「这样做是对的」记进经验库（下次还能查出来照着做）",
         detailed_description=(

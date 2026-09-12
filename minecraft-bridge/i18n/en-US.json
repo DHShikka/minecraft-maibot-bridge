@@ -32,6 +32,7 @@
   "tool.mc_forage": "Go find food: hay bales into bread, hunt animals, loot chests — try each until fed",
   "tool.mc_learn": "Remember what worked: server rules, pitfalls, and successful approaches",
   "tool.mc_recall": "Search the lesson database for how to do something",
+  "tool.mc_lock_on": "Continuous lock-on fire: auto-switches targets, auto-reloads, works with AutoAim",
   "tool.mc_look_at": "Make the character look at a target",
   "tool.mc_equip": "Switch the held item",
   "tool.mc_drop": "Drop items",

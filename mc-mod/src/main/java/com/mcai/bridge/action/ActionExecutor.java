@@ -896,6 +896,11 @@ case "dig_shaft" -> {
                 requirePermission(BridgeConfig.allowAttack, "开枪（allow.attack）");
                 yield com.mcai.bridge.action.tasks.GunTasks.shoot(id, params, timeoutMs);
             }
+            // 连续锁敌扫射：目标死了自动换下一个、弹匣空了自动换弹、顺手给 AutoAim 开锁
+            case "lock_on" -> {
+                requirePermission(BridgeConfig.allowAttack, "连续锁敌（allow.attack）");
+                yield com.mcai.bridge.action.tasks.GunTasks.lockOn(id, params, timeoutMs);
+            }
             // AI 托管：麦麦接手后玩家可以放开鼠标切出去，游戏照常跑
             case "takeover" -> new Task(id, "takeover", params, 5_000L, false, false) {
                 @Override

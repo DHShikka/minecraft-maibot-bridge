@@ -1496,12 +1496,16 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
     @Tool(
         "mc_move_to",
-        brief_description="让角色自动寻路走到指定坐标（会绕开障碍、上台阶、过水）",
+        brief_description="让角色自动寻路走到指定坐标（装了 Baritone 就优先交给它）",
         detailed_description=(
-            "让角色用 A* 寻路走到指定位置。会自动绕开障碍、上台阶、游泳，被完全封死时会失败并说明原因。\n"
+            "让角色寻路走到指定位置。会自动绕开障碍、上台阶、游泳，被完全封死时会失败并说明原因。\n"
+            "**装了 Baritone 时默认交给它**（它的寻路更稳：搭桥、绕岩浆、挖穿都会自己处理），"
+            "结果里会带 via=baritone 和实际发出的指令（例如 #goto 48 -60 3）。\n"
             "参数说明：\n"
             "- x、y、z：integer，必填。目标方块坐标。可以先从 mc_state 或 mc_scan_blocks 里拿到坐标。\n"
             "- range：integer，可选。到达判定半径，默认 1（走到目标旁边 1 格内就算到）。\n"
+            "- via：string，可选。默认交给 Baritone；填 native 就强制用模组自带的 A* 寻路"
+            "（Baritone 不在、或者想走一条它不认的路时用）。\n"
             "- player：string，可选。指定游戏客户端。\n"
             "提示：这是长动作，会一直执行到走完为止；期间可以用 mc_stop 打断，用 mc_task_status 看进度。"
         ),
@@ -1511,13 +1515,20 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             ToolParameterInfo(name="z", param_type=ToolParamType.INTEGER, description="目标 Z 坐标", required=True),
             ToolParameterInfo(name="range", param_type=ToolParamType.INTEGER,
                               description="到达判定半径，默认 1", required=False, default=1),
+            ToolParameterInfo(name="via", param_type=ToolParamType.STRING,
+                              description="留空=优先用 Baritone；填 native=强制用自带寻路",
+                              required=False, default=""),
             ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
                               description="游戏内玩家名", required=False, default=""),
         ],
     )
-    async def mc_move_to(self, x: int, y: int, z: int, range: int = 1, player: str = "", **kwargs: Any):
-        return await self._call(P.A_MOVE_TO,
-                                {"x": x, "y": y, "z": z, "range": range},
+    async def mc_move_to(self, x: int, y: int, z: int, range: int = 1, via: str = "",
+                         player: str = "", **kwargs: Any):
+        params: dict[str, Any] = {"x": x, "y": y, "z": z, "range": range}
+        if str(via).strip():
+            # 模组按 via 决定「交给 Baritone」还是「用自带 A*」
+            params["via"] = str(via).strip()
+        return await self._call(P.A_MOVE_TO, params,
                                 player=player,
                                 timeout=float(self.config.safety.max_action_timeout_seconds))
 
@@ -1651,9 +1662,13 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                               description="搜索半径，默认 32", required=False, default=32),
         ],
     )
-    async def mc_mine_blocks(self, block: str, count: int = 1, radius: int = 32, **kwargs: Any):
-        return await self._call(P.A_MINE_BLOCKS,
-                                {"block": block, "count": count, "radius": radius},
+    async def mc_mine_blocks(self, block: str, count: int = 1, radius: int = 32,
+                             via: str = "", **kwargs: Any):
+        params: dict[str, Any] = {"block": block, "count": count, "radius": radius}
+        if str(via).strip():
+            # 默认（留空）装了 Baritone 就交给它的 #mine；填 native 用自带实现
+            params["via"] = str(via).strip()
+        return await self._call(P.A_MINE_BLOCKS, params,
                                 timeout=float(self.config.safety.max_action_timeout_seconds))
 
     @Tool(

@@ -685,13 +685,20 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
             }
 
             // ------------------------------------------------------ 移动
+            //
+            // 装了 Baritone 就**优先交给它**：寻路是它的看家本事，绕障碍/搭桥/垫脚比我们自带那套稳。
+            // 想强制用自带的，在动作参数里加 "via": "native"。
             case "move_to" -> {
                 requirePermission(BridgeConfig.allowMovement, "控制移动（allow.movement�?");
-                yield MoveToTask.toCoordinates(id, params, timeoutMs);
+                final Task byBaritone = com.mcai.bridge.action.tasks.BaritoneTasks
+                        .gotoTask(id, params, timeoutMs);
+                yield byBaritone != null ? byBaritone : MoveToTask.toCoordinates(id, params, timeoutMs);
             }
             case "move_relative" -> {
                 requirePermission(BridgeConfig.allowMovement, "控制移动（allow.movement�?");
-                yield MoveToTask.relative(id, params, timeoutMs);
+                final Task byBaritone = com.mcai.bridge.action.tasks.BaritoneTasks
+                        .relativeTask(id, params, timeoutMs);
+                yield byBaritone != null ? byBaritone : MoveToTask.relative(id, params, timeoutMs);
             }
             case "follow" -> {
                 requirePermission(BridgeConfig.allowMovement, "控制移动（allow.movement�?");
@@ -720,7 +727,11 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
             }
             case "mine_blocks" -> {
                 requirePermission(BridgeConfig.allowBreak, "破坏方块（allow.breakBlocks�?");
-                yield MineTask.multiple(id, params, timeoutMs);
+                // 装了 Baritone 就让它的 #mine 去挖（数量在前：`#mine 64 dirt`）。
+                // 它比自带实现稳：挖穿、搭桥、绕岩浆都会自己处理。
+                final Task byBaritone = com.mcai.bridge.action.tasks.BaritoneTasks
+                        .mineTask(id, params, timeoutMs);
+                yield byBaritone != null ? byBaritone : MineTask.multiple(id, params, timeoutMs);
             }
             case "place" -> {
                 requirePermission(BridgeConfig.allowPlace, "放置方块（allow.placeBlocks�?");

@@ -2743,6 +2743,20 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         if installed:
             lines.append("已装相关模组：" + "、".join(installed))
 
+        # 经验库里有什么 —— 让麦麦**不用先查也知道**自己攒过哪些经验
+        # （尤其是「这台服务器能用哪些命令」这类，见 mc_recall / mc_learn）
+        try:
+            kn = getattr(self, "knowledge", None)
+            if kn is not None and getattr(kn, "available", False):
+                info = kn.stats()
+                topics = info.get("topics") or []
+                if topics:
+                    brief = "、".join(f"{t['topic']}×{t['count']}" for t in topics[:8])
+                    lines.append(f"📚 经验库 {info.get('total')} 条：{brief}"
+                                 f" —— 相关场景先 mc_recall 查一下（例如 ftbessentials 里有可用的服务器命令）")
+        except Exception:  # noqa: BLE001 - 状态渲染绝不能因为经验库出错而挂掉
+            pass
+
         # 手上那件东西的模组信息（例如枪的弹药数字）
         held_mod = state.get("heldModInfo") or {}
         if held_mod.get("item"):

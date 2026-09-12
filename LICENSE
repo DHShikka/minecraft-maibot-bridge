@@ -1,0 +1,32 @@
+MIT License
+
+Copyright (c) 2026 McAiBridge
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+第三方说明：
+
+- 本项目与 Baritone (<https://github.com/cabaletta/baritone>) 通过**游戏内聊天指令**
+  联动（Baritone 拦截 `#` 开头的消息）。没有链接它的代码、没有拷贝它的源码、
+  也没有打包它的 jar。用户若想使用相关功能，需自行安装 Baritone（LGPL-3.0）。
+- 本项目导航空间的设计参考过 Baritone 的架构与算法思路（详见 docs/BARITONE.md），
+  以及 Altoclef (<https://github.com/gaucho-matrero/altoclef>, MIT) 的进度检测思路
+  （详见 docs/ALTOCLEF.md）。两者均为重新实现，未拷贝代码。

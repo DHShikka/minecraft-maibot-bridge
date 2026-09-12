@@ -1,0 +1,128 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang ships Java 17 to end users in 1.18+, so your mod should target Java 17.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    // 国内镜像优先，加速依赖解析（拉不到时自动回落到官方源）
+    maven {
+        name = 'Aliyun Public'
+        url = 'https://maven.aliyun.com/repository/public'
+    }
+    maven {
+        name = 'MinecraftForge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    // mods.toml / pack.mcmeta 里有中文，必须显式指定 UTF-8，否则在中文 Windows 上会变成乱码
+    filteringCharset = 'UTF-8'
+    var replaceProperties = [
+            minecraft_version      : minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version          : forge_version, forge_version_range: forge_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors            : mod_authors, mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+
+    finalizedBy 'reobfJar'
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact jar
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // 让 javac 用 UTF-8 输出诊断信息，否则在中文 Windows 上控制台会变成乱码
+    options.fork = true
+    options.forkOptions.jvmArgs = ['-Dfile.encoding=UTF-8']
+}
+
+// 辅助任务：把编译期 classpath 写出来，方便用 javac 直接编译（排查报错时更快、输出更可读）
+tasks.register('printCompileClasspath') {
+    def out = layout.buildDirectory.file('compileClasspath.txt')
+    def cp = sourceSets.main.compileClasspath
+    outputs.file(out)
+    doLast {
+        out.get().asFile.setText(cp.asPath, 'UTF-8')
+        println "classpath entries: ${cp.files.size()}"
+    }
+}

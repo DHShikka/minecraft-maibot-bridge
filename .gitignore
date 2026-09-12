@@ -1,0 +1,48 @@
+# 构建产物与本地工具链
+.toolchain/
+.research/
+run/
+run-data/
+mcmodsrepo/
+
+# 本地游戏本体（整份 .minecraft，含 assets/libraries/存档，几百 MB）
+# 真机自检会往里面放 mod 和自检存档，但都不该进仓库。
+我的世界本体/
+
+# 模组
+mc-mod/build/
+mc-mod/.gradle/
+mc-mod/src/generated/
+# 模组仓库里不应该包含运行时配置
+mc-mod/config/
+
+# 插件
+# 插件源码仓库以 config_model 为配置定义，运行时 config.toml 由 Runner 生成
+maibot-plugin/config.toml
+maibot-plugin/**/config.toml
+maibot-plugin/data/
+maibot-plugin/__pycache__/
+maibot-plugin/**/__pycache__/
+
+# 工具
+tools/javatest/out/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+out/
+bin/
+
+# 通用
+*.log
+Thumbs.db
+desktop.ini
+
+# Forge/Minecraft 日志（无头跑测试时也会生成）
+logs/

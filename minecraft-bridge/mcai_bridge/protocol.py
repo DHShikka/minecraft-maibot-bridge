@@ -102,13 +102,17 @@ A_TAKEOVER = "takeover"
 A_RELOAD = "reload"
 #: 开枪（枪械的射击是「按住攻击键」，和原版近战不是一回事）
 A_SHOOT = "shoot"
+#: 枪械工作台（永恒枪械工坊）：列配方 / 报配方 id 制作
+A_GUN_SMITH = "gun_smith"
+#: 关掉当前打开的界面（右键开出来的箱子/工作台会一直挡着）
+A_CLOSE_SCREEN = "close_screen"
 
 ALL_ACTIONS = (
     A_CHAT, A_COMMAND, A_LOOK, A_MOVE_TO, A_MOVE_RELATIVE, A_FOLLOW, A_STOP, A_JUMP,
     A_SNEAK, A_SPRINT, A_MINE, A_MINE_BLOCKS, A_PLACE, A_USE_ITEM, A_USE_ON_BLOCK,
     A_ATTACK, A_EQUIP, A_DROP, A_GET_STATE, A_SCAN_BLOCKS, A_SCAN_ENTITIES, A_SLEEP,
     A_WAIT, A_CANCEL, A_TASK_STATUS, A_JUMP_ON_BLOCK, A_CRAFT, A_RECIPES, A_SCRIPT, A_DEFEND,
-    A_SMELT, A_BUCKET, A_DIG_SHAFT, A_TAKEOVER, A_RELOAD, A_SHOOT,
+    A_SMELT, A_BUCKET, A_DIG_SHAFT, A_TAKEOVER, A_RELOAD, A_SHOOT, A_GUN_SMITH, A_CLOSE_SCREEN,
 )
 
 # ---------------------------------------------------------------- 事件类型

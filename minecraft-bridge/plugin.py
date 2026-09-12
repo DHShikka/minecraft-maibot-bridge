@@ -2529,6 +2529,144 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         return await self._call(P.A_RECIPES, {"item": str(item).strip(), "limit": int(limit)},
                                 timeout=20.0)
 
+    @Tool(
+        "mc_gun_smith",
+        brief_description="枪械工作台（永恒枪械工坊）：看能做什么枪/弹，或者按配方 id 直接做出来",
+        detailed_description=(
+            "永恒枪械工坊（TaCZ）的**枪械工作台**。它和普通工作台完全不是一套玩法：\n"
+            "普通合成台是「把材料摆进 3×3」；枪械工作台是「界面列出这台机器能做的配方，"
+            "选一个，服务端直接从你背包扣材料、把成品塞回背包」——**没有槽位可点**。\n"
+            "所以本工具只有两件事：\n"
+            "1. 不带 recipe 调用：列出配方（配方 id、成品名、要什么材料、你现在有几个、缺多少）。"
+            "这一步**不需要**站在工作台旁边，出门采材料之前就能先问清楚「做这把枪到底要什么」。\n"
+            "2. 带 recipe 调用：制作。这一步**必须**先站到工作台旁边、右键打开它（界面开着才行，"
+            "服务端会核对菜单号）。\n"
+            "参数说明：\n"
+            "- recipe：string，可选。配方 id（例如 tacz:ak47），或成品名里的关键字（唯一命中才认，"
+            "匹配到多条会列出来让你挑，绝不会替你猜）。留空就是列配方。\n"
+            "- query：string，可选。列配方时按关键字过滤（配方 id / 成品名 / 分类）。\n"
+            "- craftable_only：boolean，可选。只列材料够的（默认 false，但材料够的总是排在前面）。\n"
+            "- limit：integer，可选。最多列几条，默认 20。\n"
+            "用法示例：\n"
+            "- mc_gun_smith()  → 看现在能做哪些枪（材料齐的排最前）\n"
+            "- mc_gun_smith(query=\"ak47\")  → 看 AK47 那一族要什么材料\n"
+            "- 站到工作台旁 → mc_use_on_block 右键它 → mc_gun_smith(recipe=\"tacz:ak47\") 做出来\n"
+            "- 做完记得 mc_close_screen 把界面关掉，再继续走路/挖矿。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="recipe", param_type=ToolParamType.STRING,
+                              description="配方 id 或成品名关键字（例如 tacz:ak47）；留空则列出配方",
+                              required=False, default=""),
+            ToolParameterInfo(name="query", param_type=ToolParamType.STRING,
+                              description="列配方时的关键字过滤（配方 id / 成品名 / 分类）",
+                              required=False, default=""),
+            ToolParameterInfo(name="craftable_only", param_type=ToolParamType.BOOLEAN,
+                              description="只列材料够的（默认 false，材料够的仍会排在前面）",
+                              required=False, default=False),
+            ToolParameterInfo(name="limit", param_type=ToolParamType.INTEGER,
+                              description="最多列几条配方，默认 20", required=False, default=20),
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="要操作的游戏内玩家名（多客户端时使用）", required=False, default=""),
+        ],
+    )
+    async def mc_gun_smith(self, recipe: str = "", query: str = "", craftable_only: bool = False,
+                           limit: int = 20, player: str = "", **kwargs: Any):
+        recipe = str(recipe).strip()
+        params: dict[str, Any] = {
+            "mode": "craft" if recipe else "list",
+            "limit": max(1, min(int(limit), 100)),
+        }
+        if recipe:
+            params["recipe"] = recipe
+        if str(query).strip():
+            params["query"] = str(query).strip()
+        if craftable_only:
+            params["craftable_only"] = True
+        response = await self._call(P.A_GUN_SMITH, params, player=player, timeout=25.0)
+        if not response.get("success"):
+            return response
+        result = response.get("result") or {}
+        return {**response, "content": self._render_gun_smith(result)}
+
+    def _render_gun_smith(self, result: dict[str, Any]) -> str:
+        """把枪械工作台的结果渲染成人话（原始 JSON 太大，直接丢给模型不划算）。"""
+        if not result:
+            # 模组没回传内容（例如动作被当成即时任务提前收工）。
+            # 不 print「共 None 条」这种废话 —— 直接说清楚该看哪里。
+            return ("枪械工作台没有回报结果（result 是空的）。这种情况多半是动作没能跑完 —— "
+                    "用 mc_state 看看界面开着没、背包里到底多了什么，再决定要不要重试，"
+                    "别急着反复下发。")
+        if str(result.get("mode")) == "craft":
+            tail = "\n界面还开着 —— 接着要走路/挖方块的话，先 mc_close_screen 关掉它。"
+            if result.get("signal") == "materials":
+                # 材料被扣了、成品还没同步过来（枪械工作台的菜单是 0 槽位的，
+                # 服务端改了背包也没有槽位可以广播）。这不是失败。
+                return (f"✅ 制作完成了：「{result.get('output')}」（{result.get('recipe')}）—— "
+                        f"服务端已经把材料扣掉，说明这次制作被接受了。"
+                        + (f"\n{result['note']}" if result.get("note") else "")
+                        + tail)
+            if result.get("signal") == "sent":
+                # 包发出去了，但客户端这边还没看到任何变化 —— 不能报失败（会诱导 AI 重发、
+                # 白扣一份材料），也不能报「做好了」（没证据）。如实说，并给出核实办法。
+                return (f"📤 制作请求已发出：「{result.get('output')}」（{result.get('recipe')}），"
+                        f"但客户端这边暂时看不到变化。\n"
+                        + (f"{result['note']}\n" if result.get("note") else "")
+                        + tail)
+            crafted = result.get("crafted")
+            return (f"✅ 做好了「{result.get('output')}」（{result.get('recipe')}）"
+                    f"×{crafted if crafted is not None else '?'}，背包里现在有 {result.get('have')} 个"
+                    f"（耗时 {result.get('elapsedTicks')} tick）。" + tail)
+        lines = [f"枪械工作台配方：共 {result.get('total')} 条，其中材料齐的有 "
+                 f"{result.get('craftableTotal')} 条（下面列 {len(result.get('recipes') or [])} 条，"
+                 f"材料齐的排在前面）"]
+        for one in result.get("recipes") or []:
+            mark = "✅" if one.get("canCraft") else "❌"
+            detail = "、".join(
+                f"{i.get('name')} {i.get('have')}/{i.get('need')}" for i in one.get("inputs") or []
+            ) or "不需要材料"
+            lines.append(f"  {mark} {one.get('recipe')} → {one.get('output')}｜{detail}")
+            if one.get("missing"):
+                lines[-1] += f"（缺 {one['missing']}）"
+        if result.get("matched") == 0:
+            lines.append("  （没有匹配的配方）")
+        if result.get("note"):
+            lines.append(f"说明：{result['note']}")
+        if result.get("hint"):
+            lines.append(f"提示：{result['hint']}")
+        if not result.get("recipes") and not result.get("hint"):
+            lines.append("  （这里一条配方都没有 —— 枪械配方来自数据包，可能整合包没装枪包）")
+        lines.append("要制作：先站到枪械工作台旁边 → mc_use_on_block 右键它 → "
+                     "mc_gun_smith(recipe=\"配方 id\")；做完用 mc_close_screen 关掉界面再走。")
+        return "\n".join(lines)
+
+    @Tool(
+        "mc_close_screen",
+        brief_description="关掉当前打开的界面（右键开出来的箱子/工作台/熔炉界面会一直挡着）",
+        detailed_description=(
+            "把当前打开的游戏界面关掉（等价于按 Esc / 关闭容器）。\n"
+            "为什么需要它：右键箱子、工作台、熔炉之后界面会一直开着，而「界面开着」这件事本身"
+            "会让后续动作变得别扭（右键、按键会先被界面吃掉）。状态里出现 "
+            "「🖥 界面开着：…」时就说明有界面挡着。\n"
+            "没有界面开着时调用也安全：会返回「本来就没有界面」。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="要操作的游戏内玩家名（多客户端时使用）", required=False, default=""),
+        ],
+    )
+    async def mc_close_screen(self, player: str = "", **kwargs: Any):
+        response = await self._call(P.A_CLOSE_SCREEN, {}, player=player, timeout=10.0)
+        if not response.get("success"):
+            return response
+        result = response.get("result") or {}
+        if result.get("closed"):
+            content = (f"已关掉界面（原来是 {result.get('was')}"
+                       f"（标题「{result.get('title')}」））。可以接着走路/挖方块/右键了。"
+                       if result.get("was") else "已关掉界面。")
+        else:
+            content = "本来就没有界面开着，什么都不用做。"
+        return {**response, "content": content}
+
     # -------------------------------------------------------------- 任务组
 
     @Tool(
@@ -2782,6 +2920,27 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         takeover = state.get("takeover") or {}
         if takeover.get("active"):
             lines.append("AI 托管中：窗口失焦不会暂停，鼠标已放开（玩家可以切出去）。")
+
+        # 界面开着没有 —— 右键箱子/工作台之后，最要紧的一件事就是「GUI 到底弹出来了没」。
+        # 以前状态里没有这一项：mc_use_on_block 只能告诉你「右键发出去了、方块点对了」，
+        # 界面开没开、能不能点、是哪种界面，AI 一概看不见。
+        screen = state.get("screen") or {}
+        if screen:
+            stype = str(screen.get("type") or "未知界面")
+            title = screen.get("title")
+            line = f"🖥 界面开着：{stype}"
+            if title:
+                line += f"（标题「{title}」）"
+            if screen.get("clickable"):
+                line += (f"，容器槽位 {screen.get('slots')} 个"
+                         f"（containerId={screen.get('containerId')}）")
+            else:
+                line += f" —— {screen.get('note') or '不是容器界面'}"
+            lines.append(line)
+            if "GunSmithTable" in stype:
+                lines.append("  这是枪械工作台（TaCZ）：它不看槽位 —— 用 mc_gun_smith 列配方、"
+                             "给 recipe 就能按配方做。")
+            lines.append("  要接着走路/挖方块/右键，先 mc_close_screen 把界面关掉更稳妥。")
 
         # 装了哪些相关模组 —— 决定了有哪些玩法可用
         mods = state.get("mods") or {}

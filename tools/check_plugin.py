@@ -1317,6 +1317,79 @@ async def check_end_to_end(plugin: Any) -> None:
         check(not bad_gun.get("success"), "mc_shoot 拒绝不认识的 action",
               str(bad_gun.get("content"))[:100])
 
+        # ---- 枪械工作台 + 关界面（TaCZ 工作台那条链路）
+        await asyncio.sleep(1.1)
+        client.custom_results["gun_smith"] = {
+            "mode": "craft", "recipe": "tacz:ak47", "output": "AK47 突击步枪",
+            "crafted": 1, "have": 1, "elapsedTicks": 12,
+        }
+        crafted = await plugin.mc_gun_smith(recipe="tacz:ak47")
+        check(bool(crafted.get("success")), "Tool mc_gun_smith 制作调用成功",
+              json.dumps(crafted, ensure_ascii=False)[:140])
+        g_action = await client.expect_action("gun_smith", timeout=5)
+        gp = (g_action.get("data") or {}).get("params") or {}
+        check(gp.get("mode") == "craft" and gp.get("recipe") == "tacz:ak47",
+              "mc_gun_smith(recipe=...) 下发的是 craft 模式 + 配方 id",
+              json.dumps(gp, ensure_ascii=False))
+        check("做好了" in str(crafted.get("content")) and "AK47" in str(crafted.get("content")),
+              "制作结果渲染成人话（不是丢一坨 JSON 给模型）",
+              str(crafted.get("content"))[:120])
+
+        # 枪械工作台的菜单是 0 槽位的：服务端扣了材料，但成品要等下一次背包同步才出现。
+        # 模组会回 signal=materials，这种「材料已经扣掉」的结果必须报成成功，不能报成失败，
+        # 否则 AI 会以为没做成、然后重发一次制作（白扣一份材料）。
+        client.custom_results["gun_smith"] = {
+            "mode": "craft", "recipe": "tacz:gun/ak47", "output": "AKM 突击步枪",
+            "have": 0, "signal": "materials", "elapsedTicks": 26,
+            "note": "材料已经被扣掉（第 26 tick），说明服务端接受了这次制作并已经完成；"
+                    "成品要等下一次背包同步才会出现在客户端 —— 过几秒用 mc_inventory 再看一眼。",
+        }
+        waited = await plugin.mc_gun_smith(recipe="tacz:gun/ak47")
+        await client.expect_action("gun_smith", timeout=5)
+        wtext = str(waited.get("content"))
+        check(bool(waited.get("success")) and "✅" in wtext and "服务端已经把材料扣掉" in wtext,
+              "成品还没同步回来时（signal=materials）也报成功并说明原因", wtext[:200])
+
+        client.custom_results["gun_smith"] = {
+            "mode": "list", "total": 412, "craftableTotal": 1, "matched": 2,
+            "recipes": [
+                {"recipe": "tacz:ak47", "output": "AK47 突击步枪", "canCraft": True,
+                 "inputs": [{"item": "tacz:steel_ingot", "name": "钢锭", "need": 12, "have": 12}]},
+                {"recipe": "tacz:m4a1", "output": "M4A1 卡宾枪", "canCraft": False,
+                 "inputs": [{"item": "tacz:steel_ingot", "name": "钢锭", "need": 12, "have": 4}],
+                 "missing": "钢锭×8"},
+            ],
+        }
+        listed = await plugin.mc_gun_smith(craftable_only=True, limit=5)
+        g_list = await client.expect_action("gun_smith", timeout=5)
+        glp = (g_list.get("data") or {}).get("params") or {}
+        check(glp.get("mode") == "list" and glp.get("craftable_only") is True
+              and glp.get("limit") == 5,
+              "mc_gun_smith 不带 recipe = 列配方，craftable_only/limit 都传下去了",
+              json.dumps(glp, ensure_ascii=False))
+        gtext = str(listed.get("content"))
+        check("✅" in gtext and "❌" in gtext and "缺 钢锭×8" in gtext,
+              "配方列表渲染出「够/不够 + 缺什么」", gtext[:200])
+        check("412" in gtext and "mc_close_screen" in gtext,
+              "列表摘要带上总数与「做完记得关界面」的提醒", gtext[:200])
+
+        client.custom_results["close_screen"] = {
+            "closed": True, "was": "ChestScreen", "title": "箱子"}
+        closed = await plugin.mc_close_screen()
+        c_action = await client.expect_action("close_screen", timeout=5)
+        check(c_action is not None and "已关掉界面" in str(closed.get("content")),
+              "Tool mc_close_screen 关界面并报出原来是哪个界面",
+              str(closed.get("content"))[:120])
+
+        client.custom_results["close_screen"] = {"closed": False}
+        nothing = await plugin.mc_close_screen()
+        await client.expect_action("close_screen", timeout=5)
+        check("本来就没有界面" in str(nothing.get("content")),
+              "没有界面时 mc_close_screen 也不报错",
+              str(nothing.get("content"))[:120])
+        client.custom_results.pop("close_screen", None)
+        client.custom_results.pop("gun_smith", None)
+
         client.fail_actions.add("chat")
         failed = await plugin.mc_chat(message="这条会失败")
         client.fail_actions.discard("chat")

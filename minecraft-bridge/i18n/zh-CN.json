@@ -24,6 +24,8 @@
   "tool.mc_baritone": "调用 Baritone：寻路/挖矿/探索/挖隧道/建造",
   "tool.mc_smelt": "在熔炉里烧东西（原矿变锭、沙子变玻璃）",
   "tool.mc_recipes": "查询合成配方、需要哪些材料、材料够不够",
+  "tool.mc_gun_smith": "枪械工作台（TaCZ）：看能做什么枪和弹，或按配方 id 直接做出来",
+  "tool.mc_close_screen": "关掉当前打开的界面（右键开出来的箱子/工作台会一直挡着）",
   "tool.mc_script": "任务组：一次把一整段流程交给游戏连着做完",
   "tool.mc_attack": "攻击指定的生物或玩家",
   "tool.mc_defend": "抵御：自己判断局势清掉附近的敌对生物（血少先吃或后撤）",

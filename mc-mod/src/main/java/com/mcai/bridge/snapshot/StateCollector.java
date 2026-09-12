@@ -96,7 +96,49 @@ public final class StateCollector {
         if (ranged != null) {
             root.add("ranged", ranged);
         }
+        // ---- 当前打开的界面
+        //
+        // 为什么要报这个：右键箱子/工作台（包括 TaCZ 的枪械工作台）之后，**界面开没开**
+        // 以前完全看不出来 —— mc_use_on_block 只能告诉你「右键发出去了、方块点对了」。
+        // 现在把界面的类名、标题、容器槽位数一起报上去，AI 就能确认
+        // 「GUI 真的弹出来了」，也便于判断下一步该点哪个槽。
+        safe(root, "screen", () -> screenJson(mc));
         return root;
+    }
+
+    /** 当前打开的界面（没开界面时不出现这个字段）。 */
+    private static JsonObject screenJson(final Minecraft mc) {
+        final net.minecraft.client.gui.screens.Screen screen = mc.screen;
+        if (screen == null) {
+            return null;
+        }
+        final JsonObject o = new JsonObject();
+        o.addProperty("type", screen.getClass().getSimpleName());
+        try {
+            o.addProperty("title", screen.getTitle().getString());
+        } catch (final Throwable ignored) {
+            // 忽略
+        }
+        // 容器类界面：槽位数 + containerId（能不能点槽位就看这个）
+        if (screen instanceof final net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> cs) {
+            o.addProperty("menu", cs.getMenu().getClass().getSimpleName());
+            final int slots = cs.getMenu().slots.size();
+            o.addProperty("slots", slots);
+            o.addProperty("containerId", cs.getMenu().containerId);
+            // 槽位为 0 的「容器界面」其实是自定义 GUI（TaCZ 的枪械工作台就是这样：
+            // 配方按钮自己画，一个格子都不加）。报成 clickable 会把 AI 引到「去点槽位」这条死路上。
+            if (slots <= 0) {
+                o.addProperty("clickable", false);
+                o.addProperty("note", "菜单里没有槽位（自定义界面）—— 它不看格子，"
+                        + "得按界面自己的逻辑操作。");
+            } else {
+                o.addProperty("clickable", true);
+            }
+        } else {
+            o.addProperty("clickable", false);
+            o.addProperty("note", "不是容器界面（自定义 GUI，槽位点击多半点不动，得按 GUI 自己的逻辑来）。");
+        }
+        return o;
     }
 
     // ---------------------------------------------------------------- player

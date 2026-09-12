@@ -123,6 +123,63 @@ public final class BasicTasks {
         };
     }
 
+    // ---------------------------------------------------------------- 关界面
+
+    /**
+     * 关掉当前打开的界面（{@code close_screen}）。
+     *
+     * <p>为什么需要它：右键箱子 / 工作台之后界面会一直开着，而「界面开着」这件事
+     * 以前在状态里看不出来，AI 也就没有「把它关掉」的概念 —— 于是会出现
+     * 「点完箱子接着想走路 / 想吃东西」这种被界面挡住的后续动作。</p>
+     *
+     * <p>容器界面走 {@code player.closeContainer()}（会给服务端发关闭包，物品栏正常同步），
+     * 其它界面（设置、成就这类）直接 {@code setScreen(null)}。</p>
+     */
+    public static Task closeScreen(final String id, final JsonObject params, final boolean instant) {
+        return new Task(id, "close_screen", params, 5_000L, false, false) {
+            @Override
+            protected TaskResult onTick(final Minecraft mc) {
+                final net.minecraft.client.gui.screens.Screen screen = mc.screen;
+                final JsonObject result = new JsonObject();
+                if (screen == null) {
+                    result.addProperty("closed", false);
+                    result.addProperty("note", "本来就没有界面开着。");
+                    return TaskResult.success(result);
+                }
+                result.addProperty("closed", true);
+                result.addProperty("was", screen.getClass().getSimpleName());
+                try {
+                    result.addProperty("title", screen.getTitle().getString());
+                } catch (final Throwable ignored) {
+                    // 少数界面没有标题
+                }
+                final LocalPlayer player = mc.player;
+                if (player != null && screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> cs) {
+                    // 容器界面必须走这条路：还要把「关闭容器」告诉服务端
+                    final int menuId = cs.getMenu().containerId;
+                    player.closeContainer();
+                    // 真机踩过的坑：这个调用发的是**客户端当前 containerMenu** 的菜单号。
+                    // 万一客户端那边的菜单号已经不在这个界面上（实测出现过），服务端就会一直
+                    // 挂着这个菜单不关 —— 而菜单槽位为 0 时服务端不会广播玩家背包，表现为
+                    // 「背包里的东西变了但状态里看不见」。所以再按界面自己的菜单号补发一次；
+                    // 服务端对不上号的关闭包会直接忽略，补发没有副作用。
+                    if (player.connection != null && player.containerMenu != null
+                            && player.containerMenu.containerId != menuId) {
+                        player.connection.send(
+                                new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(menuId));
+                    }
+                }
+                if (mc.screen != null) {
+                    mc.setScreen(null);
+                }
+                if (mc.mouseHandler != null) {
+                    mc.mouseHandler.grabMouse();
+                }
+                return TaskResult.success(result);
+            }
+        };
+    }
+
     // ------------------------------------------------------------------ 视角
 
     public static Task look(final String id, final JsonObject params, final boolean instant) {

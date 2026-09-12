@@ -24,6 +24,8 @@
   "tool.mc_baritone": "Drive Baritone: goto / mine / explore / tunnel / build",
   "tool.mc_smelt": "Smelt in a furnace (ore into ingots, sand into glass)",
   "tool.mc_recipes": "Look up crafting recipes, ingredients and whether you have them",
+  "tool.mc_gun_smith": "Gun smith table (TaCZ): see what guns and ammo it can make, or craft by recipe id",
+  "tool.mc_close_screen": "Close the open GUI (chest and workbench screens stay open and get in the way)",
   "tool.mc_script": "Task group: hand a whole multi-step routine to the game at once",
   "tool.mc_attack": "Attack a creature or player",
   "tool.mc_defend": "Defend: assess the situation and clear nearby hostiles (eat or back off when low)",

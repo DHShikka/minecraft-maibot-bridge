@@ -10,6 +10,7 @@ import com.mcai.bridge.action.tasks.CraftTask;
 import com.mcai.bridge.action.tasks.DefendTask;
 import com.mcai.bridge.action.tasks.DigTask;
 import com.mcai.bridge.action.tasks.FollowTask;
+import com.mcai.bridge.action.tasks.GunSmithTask;
 import com.mcai.bridge.action.tasks.InteractTask;
 import com.mcai.bridge.action.tasks.InventoryTasks;
 import com.mcai.bridge.action.tasks.MineTask;
@@ -920,6 +921,10 @@ case "dig_shaft" -> {
                 }
             };
             case "recipes" -> CraftTask.recipes(id, params, instant);
+            // 关界面：右键开出来的箱子/工作台界面会一直挡着，得有个明确动作关掉它
+            case "close_screen" -> BasicTasks.closeScreen(id, params, instant);
+            // 枪械工作台（TaCZ）：列配方 / 报配方名制作
+            case "gun_smith" -> GunSmithTask.create(id, params, instant);
 
             // ------------------------------------------------------ 战斗
             case "attack" -> {

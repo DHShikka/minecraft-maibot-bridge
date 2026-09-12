@@ -63,6 +63,21 @@ SEED: list[tuple[str, str, str, str]] = [
         "Baritone 的进度看 mc_task_status 里的 baritone 字段；想停它要 mc_stop（会顺手发 #stop）。",
         "seed",
     ),
+    (
+        "tacz",
+        "枪械工作台（TaCZ）怎么做枪：报配方 id，不用摆格子",
+        "装了永恒枪械工坊时，做枪/做子弹要用**枪械工作台**，它是另一套玩法：\n"
+        "① 先问价：mc_gun_smith() 直接列出能做的东西和材料（不用站在机器旁边，\n"
+        "   材料齐的排最前面；query=ak47 这种关键字能缩小范围）。\n"
+        "② 备料：真机数据 —— AKM(tacz:gun/ak47) 要铁锭×38、青金石×6、深色橡木原木×10；\n"
+        "   子弹要铜锭+火药（例：12 号霰弹 铜锭×15、火药×6、铁粒×18）。\n"
+        "③ 制作：走到工作台旁 → mc_use_on_block 右键它（状态里会出现「界面开着：GunSmithTableScreen」）\n"
+        "   → mc_gun_smith(recipe=\"tacz:gun/ak47\")。界面上没有可点的合成格，别去点槽位。\n"
+        "④ 做完用 mc_close_screen 关掉界面再继续跑图。\n"
+        "配方 id 长这样：tacz:gun/ak47、tacz:ammo/12g；tacz:gun_smith_table 和\n"
+        "tacz:workbench_a/_b/_c 共用一个界面，做法都一样。",
+        "seed",
+    ),
 ]
 
 

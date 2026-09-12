@@ -206,6 +206,13 @@
 
     "scoreboard": {"score": 0, "xpLevel": 12, "team": null},
 
+    "screen": {
+      "type": "GunSmithTableScreen", "title": "Gun Smith Table",
+      "menu": "GunSmithTableMenu", "slots": 0, "containerId": 1,
+      "clickable": false,
+      "note": "菜单里没有槽位（自定义界面）—— 它不看格子，得按界面自己的逻辑操作。"
+    },
+
     "task": {
       "id": "act-7", "action": "move_to", "elapsedMs": 1200,
       "timeoutMs": 120000, "movement": true, "progress": 0.42,
@@ -223,6 +230,18 @@
 ```
 
 **字段容错**：任何单个字段采集失败都会退化成 `null`，不会导致整条报文发不出去。
+
+`screen` 字段**只在真的开着界面时出现**（没开界面时整个键都省略）。它是排查
+「右键了但界面到底开了没」的唯一依据：
+
+| 字段 | 说明 |
+|---|---|
+| `type` | 界面类名（例如 `CraftingScreen`、`GunSmithTableScreen`） |
+| `title` | 界面标题（本地化后的文字） |
+| `menu` | 容器菜单类名（只有容器类界面才有） |
+| `slots` / `containerId` | 菜单槽位数与菜单号（`containerId` 是服务端核对「哪个界面」用的） |
+| `clickable` | 槽位能不能点。**槽位为 0 的自定义界面会被标成 false**（TaCZ 的枪械工作台就是这种：配方按钮自己画，一个格子都没有） |
+| `note` | `clickable=false` 时给出的原因与建议 |
 
 ### 3.4 `event`
 

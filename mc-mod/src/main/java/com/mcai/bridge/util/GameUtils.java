@@ -137,14 +137,44 @@ public final class GameUtils {
         if (key.startsWith("#")) {
             return null; // 标签由 resolveBlockTag 处理
         }
-        ResourceLocation loc = ResourceLocation.tryParse(key.contains(":") ? key : "minecraft:" + key);
-        if (loc == null) {
-            return null;
+        final boolean hasNamespace = key.contains(":");
+        ResourceLocation loc = ResourceLocation.tryParse(hasNamespace ? key : "minecraft:" + key);
+        if (loc != null && BuiltInRegistries.BLOCK.containsKey(loc)) {
+            return BuiltInRegistries.BLOCK.get(loc);
         }
-        if (!BuiltInRegistries.BLOCK.containsKey(loc)) {
-            return null;
+        // ---- 没写命名空间时，**在所有模组里找**：先按短 id，再按本地化显示名。
+        //
+        // 为什么必须有这一步：TaCZ 的枪械工作台是 tacz:gun_smith_table，
+        // 而玩家/LLM 只会写 gun_smith_table 或「枪械工作台」—— 以前这样就报
+        // 「无法识别的方块名」，于是模组方块（TaCZ 工作台、机械动力零件…）全都扫不到、挖不了。
+        // 物品名解析早就是这么干的，方块这边一直缺这一步。
+        if (hasNamespace) {
+            return null;   // 明确写了命名空间却找不到 —— 不猜，免得解析成别的东西
         }
-        return BuiltInRegistries.BLOCK.get(loc);
+        final String rawLower = name.trim().toLowerCase(Locale.ROOT);
+        Block shortMatch = null;
+        Block nameMatch = null;
+        for (final Block block : BuiltInRegistries.BLOCK) {
+            final ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+            if (id == null) {
+                continue;
+            }
+            if (shortMatch == null && id.getPath().equals(key)) {
+                shortMatch = block;
+                continue;
+            }
+            if (nameMatch == null) {
+                try {
+                    final String display = block.getName().getString().toLowerCase(Locale.ROOT);
+                    if (display.equals(rawLower) || display.contains(rawLower)) {
+                        nameMatch = block;
+                    }
+                } catch (final Throwable ignored) {
+                    // 忽略：某些方块取名字会炸
+                }
+            }
+        }
+        return shortMatch != null ? shortMatch : nameMatch;
     }
 
     /** 解析 {@code #minecraft:logs} 形式的方块标签。 */

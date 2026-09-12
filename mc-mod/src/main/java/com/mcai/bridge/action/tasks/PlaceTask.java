@@ -248,6 +248,19 @@ public final class PlaceTask extends Task {
     /** 遍历目标位置相邻的 6 个方向，挑一个实心面作为点击点。 */
     private boolean selectFace(final Minecraft mc, final LocalPlayer player, final ClientLevel level) {
         final Direction preferred = GameUtils.parseDirection(preferredFace, null);
+
+        // ---- 目标格**自己就有方块**（箱子 / 拉杆 / 工作台 / 熔炉 / 按钮…）：必须点它本身。
+        //
+        // 真机 bug：以前一律走下面那套「找邻居的实心面」逻辑，而那是给「往空格里放方块」用的 ——
+        // 于是右键箱子时射线落到了箱子**下面那格**（草方块顶面），result 直接 FAIL；
+        // 右键工作台更糟，会卡死到被看门狗掐。真机证据：
+        //   target (7,-60,9) → clickedBlock minecraft:grass_block / clickedPos (7,-61,9)
+        if (!isReplaceable(level, target)) {
+            chosenFace = preferred != null ? preferred : sideTowardPlayer(player, target);
+            clickBlock = target;
+            return true;
+        }
+
         Direction best = null;
         BlockPos bestBlock = null;
         double bestScore = Double.MAX_VALUE;
@@ -287,9 +300,26 @@ public final class PlaceTask extends Task {
         return true;
     }
 
+    /** 玩家站在目标方块的哪一侧（决定右键它哪一面）。 */
+    private static Direction sideTowardPlayer(final LocalPlayer player, final BlockPos target) {
+        final Vec3 eye = player.getEyePosition();
+        final Vec3 center = GameUtils.blockCenter(target);
+        final double dx = eye.x - center.x;
+        final double dy = eye.y - center.y;
+        final double dz = eye.z - center.z;
+        // 水平方向优先（大多数方块交互都是从侧面点的），水平差不多时再看上下
+        if (Math.abs(dx) >= Math.abs(dz)) {
+            if (Math.abs(dx) > Math.abs(dy)) {
+                return dx > 0 ? Direction.EAST : Direction.WEST;
+            }
+        } else if (Math.abs(dz) > Math.abs(dy)) {
+            return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+        }
+        return dy > 0 ? Direction.UP : Direction.DOWN;
+    }
+
     private BlockPos findStandPosition(final Minecraft mc, final LocalPlayer player,
-                                       final Vec3 hitPoint, final double reach) {
-        final ClientLevel level = mc.level;
+                                       final Vec3 hitPoint, final double reach) {        final ClientLevel level = mc.level;
         final BlockPos anchor = BlockPos.containing(hitPoint);
         BlockPos best = null;
         double bestDistance = Double.MAX_VALUE;

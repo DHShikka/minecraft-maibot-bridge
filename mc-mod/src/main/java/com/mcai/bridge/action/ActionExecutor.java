@@ -65,6 +65,12 @@ public final class ActionExecutor {
     private int progressTimer;
     private long totalExecuted;
     private long totalFailed;
+    /** 上一次自动反击的时间（冷却用）与序号（生成动作 id 用）。 */
+    private long lastAutoFightAt;
+    private int autoFightSeq;
+    /** 上一次「主动出击」的时间与序号。 */
+    private long lastAutoDefendAt;
+    private int autoDefendSeq;
 
     private ActionExecutor() {
     }
@@ -331,6 +337,250 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
         return false;
     }
 
+    // ---------------------------------------------------------------- 自动反击
+
+    /**
+     * 被生物打了：立刻还手。
+     *
+     * <p>「立刻」是字面意思：先把手上的活（挖矿、放方块、走路…）打断，
+     * 再把反击插到队首。真机上最常见的挨打场景就是「挖矿挖到一半被僵尸站背后打」，
+     * 不打断的话它会一直挖到你死。</p>
+     *
+     * <p>自己已经在打同一个目标、或者冷却没到，就不重复下发 —— 被连续攻击时
+     * 每一跳都重开任务的话，反而一刀都打不出去。</p>
+     *
+     * @param uuid   攻击者的 uuid（**服务端实体**的 uuid：客户端那两个 player 对象不是同一个，
+     *               只能靠 uuid 让客户端侧的 attack 任务自己去找对应的客户端实体）
+     * @param name   显示名，仅用于日志和给 AI 的解释
+     */
+    public void autoRetaliate(final String uuid, final String name) {
+        if (!BridgeConfig.autoFight || uuid == null || uuid.isBlank()) {
+            return;
+        }
+        final long now = System.currentTimeMillis();
+        if (now - lastAutoFightAt < BridgeConfig.autoFightCooldownMs) {
+            return;
+        }
+        if (current != null && ("attack".equals(current.type) || "defend".equals(current.type)
+                || "shoot".equals(current.type) || "reload".equals(current.type))) {
+            return;   // 已经在打了
+        }
+        // 手上的活让路：不打断的话「立刻反击」就只是句空话
+        cancelAll("被 " + name + " 攻击，先还手");
+        lastAutoFightAt = System.currentTimeMillis();   // cancelAll 会 emit，别把它算成一次反击
+
+        // 手里有什么就用什么：拿着枪/弓就用远程打，空手/近战武器才上去抡。
+        // 距离也要看：枪空弹匣时，贴脸先抡、离远了才换弹（站着换弹会被打死，真机教训）。
+        final net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        final double distance = attackerDistance(mc, uuid);
+        final String action = mc != null && mc.player != null
+                ? com.mcai.bridge.util.CombatKit.autoAction(mc.player, distance) : "attack";
+        final JsonObject params = mc != null && mc.player != null
+                ? com.mcai.bridge.util.CombatKit.autoAttackParams(mc.player, uuid, 20_000L, distance)
+                : new JsonObject();
+        params.addProperty("reason", "auto_retaliate");
+        final Task task = createTask("auto-fight-" + (++autoFightSeq), action, params, 30_000L);
+        if (task != null) {
+            queue.addFirst(task);
+            // 贴脸（2 格内）要抡近战武器，可手上还是把弓/枪 —— 先插一个换武器的动作。
+            // 注意顺序：先 addFirst 攻击、再 addFirst 换武器，队首就成了「换武器 → 打」。
+            String equipFirst = null;
+            if ("attack".equals(action) && mc != null && mc.player != null
+                    && !com.mcai.bridge.util.CombatKit.isMeleeWeapon(mc.player.getMainHandItem())) {
+                equipFirst = com.mcai.bridge.util.CombatKit.findMeleeWeaponId(mc.player);
+            }
+            if (equipFirst != null) {
+                final JsonObject equipParams = new JsonObject();
+                equipParams.addProperty("item", equipFirst);
+                equipParams.addProperty("reason", "auto_retaliate");
+                final Task equipTask = createTask("auto-equip-" + (++autoFightSeq), "equip",
+                        equipParams, 10_000L);
+                if (equipTask != null) {
+                    queue.addFirst(equipTask);
+                }
+            }
+            McAiBridge.LOGGER.info("[MaiBot Bridge] 自动反击：{}（打断当前动作，{}）", name,
+                    mc != null && mc.player != null
+                            ? com.mcai.bridge.util.CombatKit.autoModeText(mc.player, distance) : "近战");
+        }
+    }
+
+    /** 打我的那个家伙离我多远（按 uuid 找客户端实体；找不到就当成「很远」）。 */
+    private static double attackerDistance(final net.minecraft.client.Minecraft mc, final String uuid) {
+        if (mc == null || mc.player == null || mc.level == null || uuid == null) {
+            return Double.MAX_VALUE;
+        }
+        for (final net.minecraft.world.entity.Entity entity : mc.level.entitiesForRendering()) {
+            if (entity.getUUID().toString().equalsIgnoreCase(uuid)) {
+                return Math.sqrt(mc.player.distanceToSqr(entity));
+            }
+        }
+        return Double.MAX_VALUE;
+    }
+
+    // ---------------------------------------------------------------- 主动出击
+
+    /** 贴近到这个距离以内的敌人：不管手上在干什么，先打。 */
+    private static final double URGENT_DISTANCE = 6.0;
+
+    /**
+     * 托管期间：附近有敌对生物就**主动**上去打，不等它先动手。
+     *
+     * <p>为什么不自己写一套战斗逻辑：{@code defend} 已经把该想的都想好了 ——
+     * 血少先吃、被三个以上围住就撤、优先打「正在打我的」。这里只负责「什么时候开打」，
+     * 打起来之后交给它。</p>
+     *
+     * <p>几条自我约束（都是真机上会翻车的地方）：</p>
+     * <ul>
+     *   <li><b>只在托管时</b>生效 —— 玩家自己玩的时候不该被抢手柄；</li>
+     *   <li><b>手上有活就不打扰</b>（正在挖矿/放方块/走远路时不主动开战，
+     *       但被打时那条反击的路照样会插队）；</li>
+     *   <li><b>Baritone 在干活时不插手</b> —— 它可能正在执行挖矿，开战会互相打架；</li>
+     *   <li><b>有冷却、有上限</b> —— 打完一轮先喘口气，一轮最多清几个，不追到天亮。</li>
+     * </ul>
+     */
+    public void autoDefendTick(final net.minecraft.client.Minecraft mc) {
+        if (!BridgeConfig.autoAttackHostiles || !com.mcai.bridge.util.Takeover.isActive()) {
+            return;
+        }
+        if (mc == null || mc.player == null || mc.level == null) {
+            return;
+        }
+        final long now = System.currentTimeMillis();
+        if (now - lastAutoDefendAt < BridgeConfig.autoAttackCooldownMs) {
+            return;
+        }
+        final net.minecraft.world.entity.LivingEntity target = nearestHostile(mc);
+        if (target == null) {
+            return;
+        }
+        final double distance = Math.sqrt(mc.player.distanceToSqr(target));
+        // 贴脸的敌人例外：这么近了，不管手上在干什么都先打 ——
+        // 不然「主动出击」会被「我正在挖矿」永远挡在门外（真机实测就是这么一次都没触发的）。
+        final boolean urgent = distance <= URGENT_DISTANCE;
+        if (current != null && ("attack".equals(current.type) || "defend".equals(current.type)
+                || "shoot".equals(current.type) || "reload".equals(current.type))) {
+            return;   // 已经在打了
+        }
+        if (isBusy() && !urgent) {
+            return;   // 手上有活、又不紧急：先把活干完
+        }
+        if (com.mcai.bridge.util.BaritoneWatcher.active() && !urgent) {
+            return;   // Baritone 在跑（可能正在挖矿），别插手
+        }
+        lastAutoDefendAt = now;
+
+        if (urgent && isBusy()) {
+            cancelAll("有 " + com.mcai.bridge.util.GameUtils.entityName(target) + " 贴到 "
+                    + Math.round(distance) + " 格，先打它");
+        }
+
+        final JsonObject params = new JsonObject();
+        params.addProperty("radius", BridgeConfig.autoAttackRadius);
+        params.addProperty("maxKills", BridgeConfig.autoAttackMaxKills);
+        params.addProperty("reason", "auto_attack");
+        final Task task = createTask("auto-defend-" + (++autoDefendSeq), "defend", params,
+                Math.max(BridgeConfig.actionTimeoutSeconds, 90) * 1000L);
+        if (task != null) {
+            queue.addFirst(task);
+            // 日志里带上「打算用什么打」——排查时一眼能看出这次是枪、弓还是抡拳头
+            McAiBridge.LOGGER.info("[MaiBot Bridge] 主动出击：附近有 {}（{} 格外{}，{}）",
+                    com.mcai.bridge.util.GameUtils.entityName(target), Math.round(distance),
+                    urgent ? "，贴脸了" : "",
+                    com.mcai.bridge.util.CombatKit.autoModeText(mc.player, distance));
+        }
+    }
+
+    // ---------------------------------------------------------------- 自动换弹
+
+    /** 上一次自动换弹的时间（防抖：换弹本身要两三秒，别一直重开）。 */
+    private long lastAutoReloadAt;
+    /** 自动换弹任务的序号（生成动作 id 用）。 */
+    private int autoReloadSeq;
+    /** 两次自动换弹之间至少隔多久。 */
+    private static final long AUTO_RELOAD_COOLDOWN_MS = 3000L;
+
+    /**
+     * **弹匣清空就自动换弹。**
+     *
+     * <p>为什么要有这一条：打完一梭子之后，AI 手上就是一把空枪 —— 下一次开火只会回一句
+     * 「没有子弹了」，中间白白浪费一轮往返。有条件（弹匣空 + 背包有同口径子弹）就该自己补上。</p>
+     *
+     * <p>三条自我约束：</p>
+     * <ul>
+     *   <li><b>只在 AI 托管时</b>生效 —— 你自己玩的时候绝不抢 R 键；</li>
+     *   <li><b>只在闲着的时候</b>动手（{@link #isBusy()}）—— 挖矿挖到一半不该被换弹插队；</li>
+     *   <li><b>战斗过程中不走这条</b> —— 那时由战斗逻辑按手里的武器和距离自己决定
+     *       该射、该换还是该抡（贴脸时站着换弹会被打死，见 {@code CombatKit.CLOSE_QUARTER}）。</li>
+     * </ul>
+     */
+    public void autoReloadTick(final net.minecraft.client.Minecraft mc) {
+        if (!BridgeConfig.autoReload || !com.mcai.bridge.util.Takeover.isActive()) {
+            return;
+        }
+        if (mc == null || mc.player == null || mc.level == null) {
+            return;
+        }
+        if (current != null && ("attack".equals(current.type) || "defend".equals(current.type)
+                || "shoot".equals(current.type) || "reload".equals(current.type))) {
+            return;   // 正在打或正在换：别插手
+        }
+        if (isBusy()) {
+            return;   // 手上有活（挖矿、走路、合成…）：先把活干完
+        }
+        final long now = System.currentTimeMillis();
+        if (now - lastAutoReloadAt < AUTO_RELOAD_COOLDOWN_MS) {
+            return;
+        }
+        final net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
+        if (com.mcai.bridge.util.CombatKit.rangedKind(held) != com.mcai.bridge.util.CombatKit.Ranged.GUN) {
+            return;   // 手上不是枪（弓/弩不用换弹）
+        }
+        if (com.mcai.bridge.util.ModHooks.gunLoaded(held) > 0) {
+            return;   // 弹匣里还有、或者膛里还压着一发：不用换
+        }
+        final int spare = com.mcai.bridge.util.CombatKit.countAmmo(mc.player,
+                com.mcai.bridge.util.CombatKit.Ranged.GUN);
+        if (spare <= 0) {
+            return;   // 背包里也没有匹配口径的子弹：换了也白换，先去补
+        }
+        lastAutoReloadAt = now;
+        final JsonObject params = new JsonObject();
+        params.addProperty("ticks", 200);
+        params.addProperty("reason", "auto_reload");
+        final Task task = createTask("auto-reload-" + (++autoReloadSeq), "reload", params, 30_000L);
+        if (task != null) {
+            queue.addFirst(task);
+            McAiBridge.LOGGER.info("[MaiBot Bridge] 自动换弹：弹匣空了（背包还有 {} 发备弹）", spare);
+        }
+    }
+
+    /** 最近的一个还活着的敌对生物（在警戒半径内）。 */    private net.minecraft.world.entity.LivingEntity nearestHostile(
+            final net.minecraft.client.Minecraft mc) {
+        final double radius = BridgeConfig.autoAttackRadius;
+        net.minecraft.world.entity.LivingEntity best = null;
+        double bestDist = radius * radius;
+        for (final net.minecraft.world.entity.Entity entity : mc.level.entitiesForRendering()) {
+            if (!(entity instanceof final net.minecraft.world.entity.LivingEntity living)
+                    || entity == mc.player || !living.isAlive() || living.getHealth() <= 0) {
+                continue;
+            }
+            if (!"HOSTILE".equals(com.mcai.bridge.util.GameUtils.entityCategory(entity))) {
+                continue;
+            }
+            // 统一的目标筛选：视线被挡 / 在黑名单里（村民、铁傀儡、宠物…）都不打
+            if (!com.mcai.bridge.util.CombatKit.isValidTarget(mc, mc.player, entity)) {
+                continue;
+            }
+            final double d = mc.player.distanceToSqr(entity);
+            if (d < bestDist) {
+                bestDist = d;
+                best = living;
+            }
+        }
+        return best;
+    }
+
     // ---------------------------------------------------------------- 状��?
     /** 当前动作�?JSON 描述，用于状态快照与 {@code task_status}�?*/
     public JsonObject statusJson() {
@@ -367,6 +617,13 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
         o.addProperty("queueLength", queue.size());
         o.addProperty("executedTotal", totalExecuted);
         o.addProperty("failedTotal", totalFailed);
+        // Baritone 的活不排在我们的队列里：光看队列会一直显示「空闲」，
+        // 麦麦就以为没人在做事（可能重复下发，或者在它还在挖的时候改主意）。
+        final JsonObject baritone = com.mcai.bridge.util.BaritoneWatcher.statusJson();
+        if (baritone != null) {
+            o.add("baritone", baritone);
+        }
+        o.addProperty("idle", current == null && queue.isEmpty() && baritone == null);
         return o;
     }
 
@@ -381,7 +638,13 @@ if (queue.size() >= BridgeConfig.maxQueuedActions) {
 
     /** 当前动作的简短描述，�?HUD 显示�?*/
     public String hudText() {
+        // 自己在跑任务就报自己的；否则看看 Baritone 在不在干活 ——
+        // HUD 上写「空闲」而 Baritone 正在满地图跑，是最容易让人误判的一种显示。
         if (current == null) {
+            final String baritone = com.mcai.bridge.util.BaritoneWatcher.summary();
+            if (!baritone.isEmpty()) {
+                return "Baritone: " + baritone;
+            }
             return queue.isEmpty() ? "空闲" : "排队�?" + queue.size();
         }
         final double progress = current.progress();
@@ -512,6 +775,33 @@ case "dig_shaft" -> {
                 requirePermission(BridgeConfig.allowBreak, "挖掘方块（allow.break�?");
                 yield DigTask.create(id, params, timeoutMs);
             }
+            // 枪械（永恒枪械工艺这类）：射击走按键，不走原版近战
+            case "reload" -> {
+                requirePermission(BridgeConfig.allowUse, "枪械换弹（allow.use）");
+                yield com.mcai.bridge.action.tasks.GunTasks.reload(id, params, timeoutMs);
+            }
+            case "shoot" -> {
+                requirePermission(BridgeConfig.allowAttack, "开枪（allow.attack）");
+                yield com.mcai.bridge.action.tasks.GunTasks.shoot(id, params, timeoutMs);
+            }
+            // AI 托管：麦麦接手后玩家可以放开鼠标切出去，游戏照常跑
+            case "takeover" -> new Task(id, "takeover", params, 5_000L, false, false) {
+                @Override
+                protected TaskResult onTick(final Minecraft mc) {
+                    final boolean enable = Json.bool(params, "enabled",
+                            Json.bool(params, "on", !com.mcai.bridge.util.Takeover.isActive()));
+                    if (enable) {
+                        com.mcai.bridge.util.Takeover.enter(mc, "麦麦要求托管");
+                    } else {
+                        com.mcai.bridge.util.Takeover.exit(mc, "麦麦交还控制权");
+                    }
+                    final JsonObject out = com.mcai.bridge.util.Takeover.statusJson();
+                    out.addProperty("content", enable
+                            ? "已进入 AI 托管：窗口失焦也不会暂停，鼠标已放开，玩家可以切出去。"
+                            : "已交还控制权：鼠标和暂停设置还给玩家。");
+                    return TaskResult.success(out);
+                }
+            };
             case "recipes" -> CraftTask.recipes(id, params, instant);
 
             // ------------------------------------------------------ 战斗

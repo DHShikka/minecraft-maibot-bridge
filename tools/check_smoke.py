@@ -28,6 +28,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_FILE = ROOT / ".research" / "smoke-server.json"
 JAVA_FILE = ROOT / ".research" / "smoke-java.json"
 
+# 控制台编码兜底：下面会打 ↔ 这类符号，Windows 控制台默认是 GBK，
+# 直接 print 会抛 UnicodeEncodeError 把测试从中间掐断。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):  # pragma: no cover
+        pass
+
 passed = 0
 failures: list[str] = []
 

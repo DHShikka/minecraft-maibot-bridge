@@ -50,6 +50,16 @@ PLUGIN_PACKAGE = "mcai_bridge"
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(STUB_SDK))
 
+# 控制台编码兜底：这个自检会把**模组回传的原文**打出来，里面有 ✓ 之类的符号，
+# 而 Windows 控制台默认是 GBK —— 直接 print 会抛 UnicodeEncodeError，
+# 把整个端到端测试从中间掐断（表现为「突然只剩后面几条检查」）。
+# 所以强制 UTF-8 输出，编不出来的字符退化成 ?。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):  # pragma: no cover - 老解释器/被重定向
+        pass
+
 PASSED: list[str] = []
 FAILED: list[str] = []
 
@@ -1102,7 +1112,211 @@ async def check_end_to_end(plugin: Any) -> None:
         check(((clamped.get("data") or {}).get("params") or {}).get("radius") == 64,
               "半径超范围时夹到 64", str(((clamped.get("data") or {}).get("params") or {}).get("radius")))
 
-        # ---- 工具失败路径：模组回传失败
+        # ---- 桶：装液体 / 倒液体（搭地狱门的关键动作）
+        bogus_mode = await plugin.mc_bucket(mode="pour")
+        check(not bogus_mode.get("success"), "mc_bucket 拒绝不认识的 mode",
+              str(bogus_mode.get("content"))[:100])
+        bogus_fluid = await plugin.mc_bucket(mode="fill", fluid="milk")
+        check(not bogus_fluid.get("success"), "mc_bucket 拒绝不认识的 fluid",
+              str(bogus_fluid.get("content"))[:100])
+        no_coords = await plugin.mc_bucket(mode="empty", fluid="lava")
+        check(not no_coords.get("success") and "x/y/z" in str(no_coords.get("content")),
+              "mc_bucket mode=empty 没给坐标时本地拦下", str(no_coords.get("content"))[:100])
+
+        filled = await plugin.mc_bucket(mode="fill", fluid="Lava", radius=2)
+        check(bool(filled.get("success")), "Tool mc_bucket 装液体调用成功",
+              json.dumps(filled, ensure_ascii=False)[:140])
+        fill_action = await client.expect_action("bucket", timeout=5)
+        fp = (fill_action.get("data") or {}).get("params") or {}
+        check(fp.get("mode") == "fill" and fp.get("fluid") == "lava" and fp.get("radius") == 4,
+              "mc_bucket：fluid 转小写、radius 下限夹到 4、fill 不带 x/y/z",
+              json.dumps(fp, ensure_ascii=False))
+        check("x" not in fp and "y" not in fp and "z" not in fp,
+              "mc_bucket mode=fill 不该带坐标（模组自己找源头）", json.dumps(fp, ensure_ascii=False))
+
+        poured = await plugin.mc_bucket(mode="empty", fluid="water",
+                                        x="~", y="~", z="~2")
+        check(bool(poured.get("success")), "Tool mc_bucket 倒液体调用成功",
+              json.dumps(poured, ensure_ascii=False)[:140])
+        pour_action = await client.expect_action("bucket", timeout=5)
+        pp = (pour_action.get("data") or {}).get("params") or {}
+        check(pp.get("mode") == "empty" and pp.get("x") == "~" and pp.get("z") == "~2",
+              "mc_bucket：\"~\" 相对坐标原样透传给模组解析",
+              json.dumps(pp, ensure_ascii=False))
+
+        # ---- 熔炼：数量决定超时，别一步就卡满默认超时
+        no_item = await plugin.mc_smelt(item="  ")
+        check(not no_item.get("success"), "mc_smelt 缺 item 时本地拦下")
+        smelted = await plugin.mc_smelt(item="iron_ingot", count=0, radius=6)
+        check(bool(smelted.get("success")), "Tool mc_smelt 调用成功",
+              json.dumps(smelted, ensure_ascii=False)[:140])
+        smelt_action = await client.expect_action("smelt", timeout=5)
+        sp = (smelt_action.get("data") or {}).get("params") or {}
+        check(sp.get("item") == "iron_ingot" and sp.get("count") == 1 and sp.get("radius") == 6,
+              "mc_smelt：count 下限夹到 1，item/radius 原样下发",
+              json.dumps(sp, ensure_ascii=False))
+
+        # ---- 阶梯矿道：没有单独的工具，但脚本里必须能用（模组侧实现了 dig_shaft）
+        shaft_script = {"name": "挖条矿道", "steps": [{"action": "dig_shaft",
+                                                     "params": {"depth": 20}}]}
+        shafted = await plugin.mc_script(script=shaft_script)
+        check(bool(shafted.get("success")), "mc_script 能下发 dig_shaft（模组侧实现在，只是没单开工具）",
+              json.dumps(shafted, ensure_ascii=False)[:140])
+        shaft_action = await client.expect_action("script", timeout=5)
+        body = json.dumps((shaft_action.get("data") or {}).get("params") or {}, ensure_ascii=False)
+        check("dig_shaft" in body and "20" in body, "dig_shaft 的 depth 原样进了脚本", body[:160])
+
+        # ---- Baritone：靠聊天指令驱动（零依赖），最容易错的是 mine 的数量位置
+        #
+        # 数量 >0 的 mine 会让工具去盯背包（最多等 300 秒），所以这里先用**纯函数**验证
+        # 指令拼装，再只用 count=0 的形式走一遍工具调用。
+        baritone_mod = sys.modules.get("mcai_bridge_plugin")
+        check(baritone_mod is not None and hasattr(baritone_mod, "_baritone_command"),
+              "能直接测 Baritone 指令拼装函数")
+        if baritone_mod is not None and hasattr(baritone_mod, "_baritone_command"):
+            cmd = baritone_mod._baritone_command
+            check(cmd("mine", target="dirt", count=64) == "#mine 64 dirt",
+                  "Baritone mine 的数量在**方块名前面**（反过来它会报 "
+                  "\"Error at argument #2: Expected w\"）",
+                  str(cmd("mine", target="dirt", count=64)))
+            check(cmd("mine", target="dirt") == "#mine dirt", "不给数量时就是 #mine <方块>")
+            check(cmd("mine", target="#minecraft:logs", count=4) == "#mine 4 #minecraft:logs",
+                  "方块标签也能挖（#minecraft:logs）")
+            check(str(cmd("goto", x=100, y=64, z=-200)) == "#goto 100 64 -200",
+                  "goto 三坐标")
+            check(str(cmd("goto", x=100, z=-200)) == "#goto 100 -200",
+                  "goto 只给 x/z 时不硬塞 y")
+            check(str(cmd("goto", target="iron_ore")) == "#goto iron_ore", "goto 按方块名寻路")
+            check(str(cmd("stop")) == "#stop", "stop → #stop")
+            check(str(cmd("mine")).startswith("!"), "mine 缺 target 时拼装函数返回错误说明")
+            check(str(cmd("explore")) == "#explore" and str(cmd("tunnel", count=0)) == "#tunnel 2",
+                  "explore/tunnel 的默认值")
+
+        await plugin.mc_baritone(action="mine", target="dirt")
+        mine_action = await client.expect_action("chat", timeout=5)
+        mine_msg = ((mine_action.get("data") or {}).get("params") or {}).get("message")
+        check(mine_msg == "#mine dirt", "mc_baritone 把指令当**聊天**发出去", str(mine_msg))
+        check(not str(mine_msg).startswith("/"),
+              "Baritone 只拦聊天消息（# 前缀），发成 /指令 就不生效了", str(mine_msg))
+
+        await plugin.mc_baritone(action="goto", x=100, y=64, z=-200)
+        goto_action = await client.expect_action("chat", timeout=5)
+        goto_msg = ((goto_action.get("data") or {}).get("params") or {}).get("message")
+        check(goto_msg == "#goto 100 64 -200", "mc_baritone goto 带三坐标", str(goto_msg))
+
+        await plugin.mc_baritone(action="stop")
+        stop_action = await client.expect_action("chat", timeout=5)
+        check(((stop_action.get("data") or {}).get("params") or {}).get("message") == "#stop",
+              "mc_baritone stop → #stop")
+
+        bad_baritone = await plugin.mc_baritone(action="fly")
+        check(not bad_baritone.get("success"), "mc_baritone 拒绝不认识的 action",
+              str(bad_baritone.get("content"))[:100])
+        no_target = await plugin.mc_baritone(action="mine")
+        check(not no_target.get("success") and "target" in str(no_target.get("content")),
+              "mc_baritone mine 缺 target 时本地拦下", str(no_target.get("content"))[:100])
+
+        # ---- Baritone 的状态必须出现在任务状态里
+        #
+        # 背景：Baritone 干活时不经过模组的动作队列，所以 task_status 会说「空闲」——
+        # 麦麦看到「空闲」就会以为没人做事。模组侧有个 BaritoneWatcher 把它的活动
+        # 一起报上来，这里断言插件确实把它渲染出来了。
+        #
+        # 上面已经连着下发了很多动作，先等一下避开限速（限速本身是对的）。
+        await asyncio.sleep(1.1)
+        client.custom_results["task_status"] = {
+            "current": None,
+            "queued": [],
+            "queueLength": 0,
+            "executedTotal": 3,
+            "failedTotal": 0,
+            "baritone": {
+                "command": "#mine 8 oak_log",
+                "running": True,
+                "elapsedMs": 42000,
+                "idleMs": 300,
+                "moving": True,
+                "note": "Baritone 正在移动",
+            },
+        }
+        status = await plugin.mc_task_status()
+        body = str(status.get("content"))
+        check("Baritone" in body and "#mine 8 oak_log" in body and "进行中" in body,
+              "mc_task_status 把 Baritone 的活一起报出来（不能只说「空闲」）", body[:160])
+        check(bool(status.get("baritone")), "mc_task_status 额外给出结构化的 baritone 字段")
+
+        # 它停下来的时候也要说清楚 —— 否则 AI 会一直等
+        client.custom_results["task_status"] = {
+            "current": None, "queued": [], "queueLength": 0,
+            "baritone": {"command": "#mine 8 oak_log", "running": False, "elapsedMs": 60000,
+                         "idleMs": 12000, "moving": False, "note": "大概干完了"},
+        }
+        stopped = await plugin.mc_task_status()
+        check("已停" in str(stopped.get("content")),
+              "Baritone 停下来时任务状态如实说「已停」", str(stopped.get("content"))[:140])
+
+        client.custom_results["task_status"] = {"current": None, "queued": [], "queueLength": 0}
+        idle = await plugin.mc_task_status()
+        check("没在指挥它" in str(idle.get("content")),
+              "没在用 Baritone 时说明白（而不是含糊的「空闲」）", str(idle.get("content"))[:140])
+
+        # get_state 的渲染里也要有它。
+        # 注意：握手时塞进去的那份 get_state 是**后面的检查还要用的 fixture**，
+        # 这里必须先存后还，不能像 task_status 那样直接 pop 掉。
+        saved_state = client.custom_results.get("get_state")
+        client.custom_results["get_state"] = {
+            "reason": "request", "inWorld": True,
+            "player": {"name": "Steve", "pos": {"x": 0.0, "y": 64.0, "z": 0.0}, "health": 20.0,
+                       "maxHealth": 20.0, "food": 20, "dimension": "minecraft:overworld",
+                       "gameMode": "survival"},
+            "baritone": {"command": "#goto 100 64 -200", "running": True, "elapsedMs": 9000,
+                         "moving": True},
+        }
+        state_with_baritone = await plugin.mc_state()
+        check("Baritone" in str(state_with_baritone.get("content")),
+              "mc_state 的摘要里也带上 Baritone 状态",
+              str(state_with_baritone.get("content"))[:200])
+        if saved_state is not None:
+            client.custom_results["get_state"] = saved_state
+        client.custom_results.pop("task_status", None)
+
+        # ---- AI 托管 + 枪械（模组联动的那两个工具）
+        await asyncio.sleep(1.1)
+        toggle = await plugin.mc_takeover()
+        check(bool(toggle.get("success")), "Tool mc_takeover 调用成功（不带参数 = 切换）",
+              json.dumps(toggle, ensure_ascii=False)[:140])
+        t_action = await client.expect_action("takeover", timeout=5)
+        tp = (t_action.get("data") or {}).get("params") or {}
+        check("enabled" not in tp, "mc_takeover 不填参数时不硬塞 enabled（由模组自己切换）",
+              json.dumps(tp, ensure_ascii=False))
+
+        await plugin.mc_takeover(enabled=False)
+        off = await client.expect_action("takeover", timeout=5)
+        check(((off.get("data") or {}).get("params") or {}).get("enabled") is False,
+              "mc_takeover(enabled=False) 明确交还控制权",
+              json.dumps((off.get("data") or {}).get("params"), ensure_ascii=False))
+
+        reloaded = await plugin.mc_shoot(action="reload")
+        check(bool(reloaded.get("success")), "Tool mc_shoot reload 调用成功",
+              json.dumps(reloaded, ensure_ascii=False)[:140])
+        r_action = await client.expect_action("reload", timeout=5)
+        check((r_action.get("data") or {}).get("action") == "reload",
+              "mc_shoot(action=reload) 下发的是 reload 动作",
+              json.dumps(r_action.get("data"), ensure_ascii=False)[:140])
+
+        shot = await plugin.mc_shoot(action="shoot", target="zombie", ticks=10)
+        check(bool(shot.get("success")), "Tool mc_shoot shoot 调用成功",
+              json.dumps(shot, ensure_ascii=False)[:140])
+        s_action = await client.expect_action("shoot", timeout=5)
+        sp = (s_action.get("data") or {}).get("params") or {}
+        check(sp.get("ticks") == 10 and sp.get("target") == "zombie",
+              "mc_shoot(shoot)：瞄准目标和按住时长都传下去了",
+              json.dumps(sp, ensure_ascii=False))
+
+        bad_gun = await plugin.mc_shoot(action="throw")
+        check(not bad_gun.get("success"), "mc_shoot 拒绝不认识的 action",
+              str(bad_gun.get("content"))[:100])
+
         client.fail_actions.add("chat")
         failed = await plugin.mc_chat(message="这条会失败")
         client.fail_actions.discard("chat")
@@ -1111,6 +1325,10 @@ async def check_end_to_end(plugin: Any) -> None:
               str(failed.get("content"))[:100])
 
         # ---- 工具返回内容对 LLM 友好
+        #
+        # 上面连着下发了几十个动作，会撞到插件的限速（默认每秒 20 个）——
+        # 限速本身是**对的**（防止 AI 把游戏刷爆），所以这里等一下再继续。
+        await asyncio.sleep(1.1)
         state_tool = await plugin.mc_state()
         check(bool(state_tool.get("success")) and "Steve" in str(state_tool.get("content")),
               "mc_state 返回了可读的状态摘要", str(state_tool.get("content"))[:120])

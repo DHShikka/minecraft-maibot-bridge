@@ -75,6 +75,27 @@ public final class StateCollector {
         safe(root, "players", () -> playersJson(level, player));
         safe(root, "inventory", () -> inventoryJson(player));
         safe(root, "scoreboard", () -> scoreboardJson(player));
+        // Baritone 干的活不在我们的动作队列里：把它的状态一起报上去，
+        // 否则这边一直显示「空闲」，麦麦会以为没人在做事。
+        // 没在指挥 Baritone 时这个字段**不出现**（协议允许字段缺失，插件要容忍）。
+        final JsonObject baritone = com.mcai.bridge.util.BaritoneWatcher.statusJson();
+        if (baritone != null) {
+            root.add("baritone", baritone);
+        }
+        // AI 托管状态：麦麦得知道「现在是不是我在开车、玩家能不能碰鼠标」
+        root.add("takeover", com.mcai.bridge.util.Takeover.statusJson());
+        // 装了哪些相关模组（JEI / 枪械 / 机械动力 / Baritone）—— AI 先知道有什么工具
+        safe(root, "mods", com.mcai.bridge.util.ModHooks::modsJson);
+        // 手上那件东西的模组信息（枪械的弹药数字之类）
+        final JsonObject heldMod = com.mcai.bridge.util.ModHooks.heldModInfo(mc);
+        if (heldMod != null) {
+            root.add("heldModInfo", heldMod);
+        }
+        // 远程武器还剩几发 —— 「记得带子弹」这件事得让 AI 随时看得见
+        final JsonObject ranged = com.mcai.bridge.util.CombatKit.rangedStatus(player);
+        if (ranged != null) {
+            root.add("ranged", ranged);
+        }
         return root;
     }
 

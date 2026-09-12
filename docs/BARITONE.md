@@ -22,6 +22,76 @@
 
 ---
 
+## 0.5 联动真 Baritone：走聊天指令，不走它的 API
+
+上面说的都是「借鉴思路自己实现」。但玩家 mods 目录里真的放了 `baritone.jar` 时，
+**能直接用它** —— 工具 `mc_baritone` 就是这么做的。
+
+**为什么不调它的 API**：手上那个 jar 是**混淆过的**（`baritone/api/` 只剩 4 个类，
+没有 `IBaritone`、没有 `Settings`、没有 `process/*`），拿不到稳定入口。
+而 Baritone 拦截**聊天消息**（前缀 `#`）这个行为是长期稳定的接口。
+
+于是整条链路是：
+
+```
+mc_baritone(action="goto", target="iron_ore")
+   → 插件拼指令 "#goto iron_ore"
+   → 走 chat 动作（不是 command！Baritone 只拦聊天，/goto 不会生效）
+   → 游戏里发出去 → Baritone 自己开始干活
+```
+
+这样做的好处是**零依赖**：没装 Baritone 时这些消息就只是普通聊天，不会崩、
+不会报 ClassNotFound；装了就能用。代价是**拿不到它的进度**（它不回话），
+所以「挖够了没有」只能靠我们盯背包（`mine` 就是每 3 秒数一次背包里的量）。
+
+### 两个真机踩出来的坑
+
+1. **`#mine` 的数量在方块名前面**：`#mine 64 dirt`，不是 `#mine dirt 64`。
+   写反了 Baritone 会报 `Error at argument #2: Expected w` —— 它把 `64` 当成又一个方块名了。
+2. **`#goto` 只给 x/z 时不要硬塞 y**：`#goto 100 -200` 是合法的（它自己找高度），
+   `#goto 100 64 -200` 也行。但别把 `y` 填成 0 冒充。
+
+| action | 拼出来的指令 | 说明 |
+|---|---|---|
+| `goto` | `#goto <x> <y> <z>` / `#goto <x> <z>` / `#goto <方块名>` | 坐标或「走到某种方块」 |
+| `mine` | `#mine <数量> <方块>` / `#mine <方块>` | 数量在前；支持 `#minecraft:logs` 这种标签 |
+| `explore` | `#explore` | 自己往外探图（找岩浆湖、找结构） |
+| `tunnel` | `#tunnel <高度>` | 往前挖隧道 |
+| `come` / `follow` | `#come` / `#follow player <名字>` | 过来 / 跟着 |
+| `thisway` | `#thisway <格数>` | 朝当前朝向走 N 格 |
+| `build` | `#build <schematic>` | 按图纸建造（图纸要放进 Baritone 的 schematics 目录） |
+| `stop` | `#stop` | 停下它的一切动作 |
+
+### 任务状态要和它同步（`BaritoneWatcher`）
+
+交给 Baritone 之后，**干活的是它，我们的动作队列里什么都没有** ——
+于是 `task_status` 老老实实报「空闲」，麦麦就以为没人在做事：可能重复下发一遍，
+或者在它还在挖的时候改主意。所以模组里有个 `BaritoneWatcher` 把它的活动并进状态：
+
+```json
+"baritone": {
+  "command": "#mine 8 iron_ore", "running": false, "elapsedMs": 63277,
+  "idleMs": 9900, "moving": false, "everMoved": true,
+  "note": "已经 5 秒没有任何动静：大概干完了，或者卡住了（挖矿类可以用 mc_inventory 看数量确认）"
+}
+```
+
+它是**看行为**推出来的，不是查 Baritone 的内部状态（那个 jar 混淆得只剩
+`IBaritoneProvider.a()`，反射拿不到东西）：
+
+- 记下每一条发出去的 `#` 指令；
+- 之后盯玩家的位移、是不是在挖方块（`isDestroying`）、有没有挥手臂；
+- **5 秒**没有任何动静就认为它停了 —— 这个数字是照着真机调的：
+  `#mine 8 iron_ore` 全程 63 秒，中间一直有位移或挖掘动作。
+
+顺手还做了两件事：
+
+- **`stop` 会把 Baritone 一起刹住**：只清自己的队列会出现「麦麦说停了，人还在满地图挖」。
+- **Baritone 的错误回话进状态**：它报 `[Baritone] Error at argument #2: Expected w`
+  这种话会被 `reply` 字段带上来 —— 这正是麦麦最需要看到的东西。
+
+---
+
 ## 1. 旧实现的问题
 
 原来的导航是「路点 + 通用跟随器」：
@@ -176,6 +246,10 @@ Baritone 有 ~5 万行，本项目只取了最核心的骨架。**明确没做**
 | 45° 斜向优化、`Favoring` | ❌ 未实现 |
 
 这些是明确的后续方向，不是「已经支持」。
+
+不过要注意上面这张表说的是**我们自己写的那套导航层**。装了真 Baritone 的时候，
+`build`（按 schematic 建造）、批量找矿这些能力**可以直接用它**（`mc_baritone`），
+我们不需要自己实现 —— 见 [0.5 节](#05-联动真-baritone走聊天指令不走它的-api)。
 
 ---
 

@@ -165,6 +165,119 @@ public final class BridgeConfig {
         BUILDER.pop();
     }
 
+    // ============================================================== 战斗
+
+    static {
+        BUILDER.comment("战斗：被打之后的自动反应。这些是**模组自己的行为**，不需要麦麦下发动作。")
+                .push("combat");
+    }
+
+    private static final ForgeConfigSpec.BooleanValue AUTO_FIGHT = BUILDER
+            .comment("被生物打了就立刻反击：立刻中断手上的活、转身打回去。",
+                     "关掉的话只有麦麦显式下发 attack/defend 才会还手。")
+            .define("autoFight", true);
+
+    private static final ForgeConfigSpec.BooleanValue USE_SHIELD = BUILDER
+            .comment("有盾牌就自动换到副手，并在敌人靠近时举盾格挡。")
+            .define("useShield", true);
+
+    private static final ForgeConfigSpec.BooleanValue USE_BOW = BUILDER
+            .comment("目标在天上/会飞（近战够不到）时，自动换弓射它。需要背包里有弓和箭。")
+            .define("useBow", true);
+
+    private static final ForgeConfigSpec.IntValue AUTO_FIGHT_COOLDOWN_MS = BUILDER
+            .comment("两次自动反击之间至少隔多少毫秒（防止被连续打时反复重开任务）。")
+            .defineInRange("autoFightCooldownMs", 1500, 0, 60_000);
+
+    private static final ForgeConfigSpec.BooleanValue AUTO_ATTACK_HOSTILES = BUILDER
+            .comment("**主动出击**：托管期间附近出现敌对生物就上去打（不等它先动手）。",
+                     "用的是 defend 那套战术：血少先吃、被围就撤、优先打正在打我的。",
+                     "只在 AI 托管时生效 —— 你自己玩的时候不会被抢手柄。")
+            .define("autoAttackHostiles", true);
+
+    private static final ForgeConfigSpec.BooleanValue AUTO_RELOAD = BUILDER
+            .comment("**弹匣清空自动换弹**：手上是枪、弹匣打空了、背包里还有同口径的子弹，",
+                     "而且自己正闲着（没有别的动作在跑）时，自动换弹。",
+                     "只在 AI 托管时生效 —— 你自己玩的时候不会抢你的 R 键。",
+                     "战斗过程中不走这条：那时由战斗逻辑自己决定该射、该换还是该抡。")
+            .define("autoReload", true);
+
+    private static final ForgeConfigSpec.IntValue AUTO_ATTACK_RADIUS = BUILDER
+            .comment("主动出击的警戒半径（格）。")
+            .defineInRange("autoAttackRadius", 12, 3, 48);
+
+    private static final ForgeConfigSpec.IntValue AUTO_ATTACK_COOLDOWN_MS = BUILDER
+            .comment("两次主动出击之间至少隔多少毫秒（打完一轮先喘口气，别追着满地图跑）。")
+            .defineInRange("autoAttackCooldownMs", 4000, 0, 120_000);
+
+    private static final ForgeConfigSpec.IntValue AUTO_ATTACK_MAX_KILLS = BUILDER
+            .comment("一轮主动出击最多清掉几个（防止一路追杀到天亮）。")
+            .defineInRange("autoAttackMaxKills", 4, 1, 64);
+
+    private static final ForgeConfigSpec.BooleanValue TARGET_REQUIRE_LOS = BUILDER
+            .comment("选目标要不要检查视线（被方块挡住的不算目标）。",
+                     "开着更聪明（不会对着墙砍）；想让它隔墙也打（比如隔着栅栏射）可以关掉。",
+                     "做法参考 10089YMGC/AutoAim：从眼睛到目标眼睛投射线，被挡住就跳过。")
+            .define("targetRequireLineOfSight", true);
+
+    private static final ForgeConfigSpec.BooleanValue TARGET_SKIP_INVISIBLE = BUILDER
+            .comment("隐身的目标跳过（看不见，瞄它没意义）。")
+            .define("targetSkipInvisible", true);
+
+    private static final ForgeConfigSpec.ConfigValue<List<? extends String>> TARGET_BLACKLIST = BUILDER
+            .comment("**永远不主动攻击**的实体（实体 id，忽略大小写）。",
+                     "默认把村民、铁傀儡、盔甲架、宠物这类「打了是纯粹搞破坏」的拉黑；",
+                     "AI 手里有剑的时候去打村民是很糟糕的行为。想让它打谁就把谁从这里删掉。")
+            .defineListAllowEmpty("targetBlacklist",
+                    List.of("minecraft:villager", "minecraft:wandering_trader",
+                            "minecraft:iron_golem", "minecraft:snow_golem",
+                            "minecraft:armor_stand", "minecraft:bat",
+                            "minecraft:wolf", "minecraft:cat", "minecraft:parrot",
+                            "minecraft:allay", "minecraft:axolotl", "minecraft:item_frame",
+                            "minecraft:painting"),
+                    BridgeConfig::isNonEmptyString);
+
+    static {
+        BUILDER.pop();
+    }
+
+    // ============================================================== 画面
+
+    static {
+        BUILDER.comment("画面：不影响游戏规则，只改客户端显示。")
+                .push("visual");
+    }
+
+    private static final ForgeConfigSpec.DoubleValue GAMMA = BUILDER
+            .comment("把「亮度」强行拉到这个值，效果等同于夜视 / fullbright（洞穴里全亮）。",
+                     "0 = 不动玩家的设置；1.0 = 原版能拉到的最大亮度；10 以上基本全亮（推荐 10）。",
+                     "注意：这是客户端本地设置，退出游戏时会写进 options.txt —— 也就是说",
+                     "它会留在你的游戏设置里，不会自己还原。")
+            .defineInRange("gamma", 0.0, 0.0, 100.0);
+
+    static {
+        BUILDER.pop();
+    }
+
+    // ============================================================== 托管
+
+    static {
+        BUILDER.comment("AI 托管：麦麦接手之后，玩家可以放开鼠标、切出去，游戏照常跑、AI 照常操作。")
+                .push("takeover");
+    }
+
+    private static final ForgeConfigSpec.BooleanValue TAKEOVER_ON_CONNECT = BUILDER
+            .comment("麦麦（插件）一连上就自动进入托管。关掉的话只能用动作/工具手动开。")
+            .define("autoOnConnect", true);
+
+    private static final ForgeConfigSpec.BooleanValue TAKEOVER_RELEASE_MOUSE = BUILDER
+            .comment("托管时把鼠标从游戏窗口里放开（不然玩家一碰鼠标就和 AI 抢视角）。")
+            .define("releaseMouse", true);
+
+    static {
+        BUILDER.pop();
+    }
+
     // ============================================================== 安全阀
 
     static {
@@ -240,6 +353,24 @@ public final class BridgeConfig {
     public static boolean allowChat = true;
     public static boolean allowCommand = true;
     public static List<? extends String> commandBlacklist = List.of();
+    public static boolean autoFight = true;
+    public static boolean useShield = true;
+    public static boolean useBow = true;
+    public static int autoFightCooldownMs = 1500;
+    public static boolean autoAttackHostiles = true;
+    public static boolean autoReload = true;
+    public static int autoAttackRadius = 12;
+    public static int autoAttackCooldownMs = 4000;
+    public static int autoAttackMaxKills = 4;
+    /** 选目标时要求视线通畅（不被方块挡住）、跳过隐身、以及永不主动攻击的黑名单。 */
+    public static boolean targetRequireLineOfSight = true;
+    public static boolean targetSkipInvisible = true;
+    public static List<? extends String> targetBlacklist = List.of();
+    /** 强行设定的伽马值（0 = 不动）。用来模拟夜视：洞穴里也能看清。 */
+    public static double gamma = 0.0;
+    /** AI 托管：麦麦一连上就接管（关掉失焦暂停、放开鼠标）。 */
+    public static boolean takeoverOnConnect = true;
+    public static boolean takeoverReleaseMouse = true;
     public static int maxActionsPerSecond = 20;
     public static int actionTimeoutSeconds = 120;
     public static int maxQueuedActions = 32;
@@ -310,6 +441,21 @@ public final class BridgeConfig {
         allowChat = ALLOW_CHAT.get();
         allowCommand = ALLOW_COMMAND.get();
         commandBlacklist = COMMAND_BLACKLIST.get();
+        autoFight = AUTO_FIGHT.get();
+        useShield = USE_SHIELD.get();
+        useBow = USE_BOW.get();
+        autoFightCooldownMs = AUTO_FIGHT_COOLDOWN_MS.get();
+        autoAttackHostiles = AUTO_ATTACK_HOSTILES.get();
+        autoReload = AUTO_RELOAD.get();
+        autoAttackRadius = AUTO_ATTACK_RADIUS.get();
+        autoAttackCooldownMs = AUTO_ATTACK_COOLDOWN_MS.get();
+        autoAttackMaxKills = AUTO_ATTACK_MAX_KILLS.get();
+        targetRequireLineOfSight = TARGET_REQUIRE_LOS.get();
+        targetSkipInvisible = TARGET_SKIP_INVISIBLE.get();
+        targetBlacklist = TARGET_BLACKLIST.get();
+        gamma = GAMMA.get();
+        takeoverOnConnect = TAKEOVER_ON_CONNECT.get();
+        takeoverReleaseMouse = TAKEOVER_RELEASE_MOUSE.get();
         maxActionsPerSecond = MAX_ACTIONS_PER_SECOND.get();
         actionTimeoutSeconds = ACTION_TIMEOUT_SECONDS.get();
         maxQueuedActions = MAX_QUEUED_ACTIONS.get();

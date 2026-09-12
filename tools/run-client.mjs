@@ -107,10 +107,14 @@ for (const a of json.arguments.game || []) {
 }
 
 // ---- 4. 清掉上次的自检存档（否则 createFreshLevel 会撞名）
+//      MCAI_KEEP_WORLD=1 时不删：长任务（搭地狱门这种）要接着上次的存档干。
+const keepWorld = process.env.MCAI_KEEP_WORLD === '1' || process.env.MCAI_KEEP_WORLD === 'true';
 const saveDir = join(versionDir, 'saves', 'mcai-selftest');
-if (selftest && existsSync(saveDir)) {
+if (selftest && !keepWorld && existsSync(saveDir)) {
   rmSync(saveDir, { recursive: true, force: true });
   console.log('已删除上次的自检存档');
+} else if (selftest && keepWorld) {
+  console.log(existsSync(saveDir) ? '保留存档模式：接着上次的存档继续' : '保留存档模式：还没有存档，会新建一个');
 }
 
 // ---- 5. 启动
@@ -125,6 +129,10 @@ const args = [
         '-Dmcai.selftest.terrain=' + (process.env.MCAI_TERRAIN || 'flat'),
         // 默认开作弊（自检要发东西/召唤怪）；MCAI_CHEATS=false 验证「不作弊」
         '-Dmcai.selftest.cheats=' + (process.env.MCAI_CHEATS || 'true'),
+        // 长任务：读旧存档接着玩 + 死亡不掉落（真机会被怪打死，掉光装备等于重来）
+        '-Dmcai.selftest.keepWorld=' + (keepWorld ? 'true' : 'false'),
+        '-Dmcai.selftest.keepInventory=' + (process.env.MCAI_KEEP_INVENTORY || 'false'),
+        '-Dmcai.selftest.autoRespawn=' + (process.env.MCAI_AUTO_RESPAWN || 'true'),
       ]
     : []),
   ...jvm, json.mainClass, ...gameArgs,

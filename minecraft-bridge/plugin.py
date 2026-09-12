@@ -1565,7 +1565,49 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         parameters=[],
     )
     async def mc_task_status(self, **kwargs: Any):
-        return await self._call(P.A_TASK_STATUS, {}, timeout=10.0)
+        """任务状态：把**自己的动作**和 **Baritone 的活**一起报出来。
+
+        以前这里只说「空闲」—— 因为 Baritone 干活时不经过模组的动作队列。
+        麦麦看到「空闲」就会以为没人做事，可能重复下发，或者在 Baritone
+        还在挖的时候改主意。现在两边的状态合并在一句话里。
+        """
+        response = await self._call(P.A_TASK_STATUS, {}, timeout=10.0)
+        if not response.get("success"):
+            return response
+        task = response.get("result") or {}
+
+        lines: list[str] = []
+        current = task.get("current") or None
+        queued = task.get("queued") or []
+        if current:
+            lines.append(f"正在做：{current.get('action')}"
+                         f"（{int(current.get('elapsedMs') or 0) // 1000} 秒"
+                         + (f"，进度 {current.get('progress')}" if current.get("progress") is not None else "")
+                         + (f"，{current.get('detail')}" if current.get("detail") else "") + "）")
+        else:
+            lines.append("自己的动作队列：空闲")
+
+        if queued:
+            lines.append("排队中：" + "、".join(str(q.get("action")) for q in queued))
+
+        baritone = task.get("baritone") or None
+        if baritone:
+            state = "进行中" if baritone.get("running") else "已停"
+            lines.append(f"Baritone：{baritone.get('command')} —— {state}"
+                         f"（{int(baritone.get('elapsedMs') or 0) // 1000} 秒，"
+                         f"{'在动' if baritone.get('moving') else '暂时没动'}）")
+            if baritone.get("reply"):
+                lines.append(f"  Baritone 回话：{baritone['reply']}")
+            if baritone.get("note"):
+                lines.append(f"  提示：{baritone['note']}")
+            response["baritone"] = baritone
+        else:
+            lines.append("Baritone：没在指挥它")
+        lines.append(f"累计执行 {task.get('executedTotal', 0)} 个动作，失败 {task.get('failedTotal', 0)} 个")
+
+        response["content"] = "\n".join(lines)
+        response["task"] = task
+        return response
 
     @Tool(
         "mc_mine",
@@ -2048,28 +2090,40 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         if not result.get("success"):
             return result
 
-        # ---- 挖矿：Baritone 自己知道挖几个（数量在指令里），但我们仍然盯一下背包，
-        # 好在挖够时把确切结果报给 AI（而不是只说「已下发」）。
+        # ---- 挖矿：Baritone 自己知道挖几个（数量在指令里），但我们仍然盯两件事：
+        #      背包里的数量（够了没）+ 它还在不在动（是在干活还是停了/卡了）。
         if name == "mine" and int(count) > 0:
             target_count = int(count)
             deadline = time.time() + min(300.0, 30.0 + target_count * 20.0)
             have = 0
+            stalled = 0
             while time.time() < deadline:
                 await asyncio.sleep(3.0)
                 state = await self._call(P.A_GET_STATE, {}, player=player, timeout=20.0)
-                have = _count_items(state.get("result"), target)
+                snapshot = state.get("result") or {}
+                have = _count_items(snapshot, target)
                 if have >= target_count:
                     break
+                # 模组侧的「Baritone 活动监视」：连续两次快照都没动静就当它停了，
+                # 不用傻等满 300 秒（真机上「附近没这种方块」时它就是这样停下来的）。
+                baritone = snapshot.get("baritone") or {}
+                if baritone and not baritone.get("running"):
+                    stalled += 1
+                    if stalled >= 2:
+                        break
+                else:
+                    stalled = 0
             done = have >= target_count
             if done:
                 await self._call(P.A_CHAT, {"message": "#stop"}, player=player, timeout=20.0)
             result["content"] = (
                 f"让 Baritone 挖 {target}，现在背包里有 {have} 个（目标 {target_count}）"
                 + ("，已经够了，已让它停下。" if done else
-                   "，还没挖够——可能附近没有这种方块，或者地形复杂挖得慢。"
+                   "，还没挖够 —— 可能附近没有这种方块，或者它已经停下来了。"
                    "可以先用 mc_scan_blocks 确认附近有没有；要停就 action=stop。")
             )
             result["mined"] = have
+            result["baritone"] = (snapshot.get("baritone") if not done else None)
             result["success"] = done
             return result
 
@@ -2080,6 +2134,165 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         )
         result["baritone_command"] = text
         return result
+
+    @Tool(
+        "mc_bucket",
+        brief_description="装液体 / 倒液体：装一桶水或岩浆，或者把桶里的液体倒出来",
+        detailed_description=(
+            "用桶装液体或倒液体。**做黑曜石（进而搭地狱门）必须用它**：\n"
+            "  黑曜石 = 岩浆源 + 水。所以要「装一桶岩浆倒到位置 A，再装一桶水倒上去」。\n"
+            "\n"
+            "参数说明：\n"
+            "- mode：string，必填。\n"
+            "    · fill  —— 装液体：自动找附近**源头**（流动的液体装不起来），走过去右键装满。\n"
+            "    · empty —— 倒液体：把手上的水桶/岩浆桶倒在 x/y/z 那一格。\n"
+            "- fluid：string，可选，默认 water。fill 时装哪种液体：water 或 lava。\n"
+            "- x、y、z：mode=empty 时必填，液体倒在哪一格。支持 \"~\" 相对坐标\n"
+            "  （\"~\" 是自己脚下那一格，\"~2\" 是前方两格），例如 {\"x\":\"~\",\"y\":\"~\",\"z\":\"~2\"}。\n"
+            "- radius：integer，可选，默认 24。fill 时找液体的搜索半径。\n"
+            "\n"
+            "前提：手上或背包里要有**桶**（空桶 = 3 个铁锭合成）。\n"
+            "要点：倒液体时流体落在**点击面的相邻格**，模组已经帮你算好了 —— 你只给最终落点就行。\n"
+            "返回里 source（从哪装的）/ pouredAt（倒在哪了）。\n"
+            "\n"
+            "搭地狱门的典型用法：\n"
+            "  1. mc_baritone(action=\"mine\", target=\"iron_ore\", count=4)  挖铁\n"
+            "  2. mc_smelt(item=\"iron_ingot\", count=3) → mc_craft(item=\"bucket\", count=2)\n"
+            "  3. mc_bucket(mode=\"fill\", fluid=\"lava\")  装一桶岩浆\n"
+            "  4. mc_bucket(mode=\"empty\", x=.., y=.., z=..)  倒在框架位置\n"
+            "  5. mc_bucket(mode=\"fill\", fluid=\"water\") → mc_bucket(mode=\"empty\", ...) 浇水成黑曜石"
+        ),
+        parameters=[
+            ToolParameterInfo(name="mode", param_type=ToolParamType.STRING,
+                              description="fill（装液体）或 empty（倒液体）",
+                              required=True, enum_values=["fill", "empty"]),
+            ToolParameterInfo(name="fluid", param_type=ToolParamType.STRING,
+                              description="fill 时装什么：water 或 lava，默认 water",
+                              required=False, default="water", enum_values=["water", "lava"]),
+            ToolParameterInfo(name="x", param_type=ToolParamType.STRING,
+                              description='empty 时必填：倒在哪一格的 X（支持 "~"）', required=False),
+            ToolParameterInfo(name="y", param_type=ToolParamType.STRING,
+                              description='empty 时必填：Y（支持 "~" / "~-1"）', required=False),
+            ToolParameterInfo(name="z", param_type=ToolParamType.STRING,
+                              description='empty 时必填：Z（支持 "~"）', required=False),
+            ToolParameterInfo(name="radius", param_type=ToolParamType.INTEGER,
+                              description="fill 时找液体的半径，默认 24", required=False, default=24),
+        ],
+    )
+    async def mc_bucket(self, mode: str, fluid: str = "water", x: Any = None, y: Any = None,
+                        z: Any = None, radius: int = 24, **kwargs: Any):
+        m = str(mode).strip().lower()
+        if m not in ("fill", "empty"):
+            return {"success": False,
+                    "content": f"mode 只能是 fill（装）或 empty（倒），收到「{mode}」。"}
+        fl = str(fluid).strip().lower() or "water"
+        if fl not in ("water", "lava"):
+            return {"success": False, "content": f"fluid 只能是 water 或 lava，收到「{fluid}」。"}
+
+        params: dict[str, Any] = {"mode": m, "fluid": fl, "radius": max(4, int(radius))}
+        if m == "empty":
+            if x is None or y is None or z is None:
+                return {"success": False,
+                        "content": "mode=empty 要给 x/y/z（液体倒在哪一格）。"
+                                   '想倒在面前两格就传 {"x": "~", "y": "~", "z": "~2"}。'}
+            # 原样透传：模组侧自己解析 "~" 相对坐标（和 place 一样）
+            params.update({"x": x, "y": y, "z": z})
+        return await self._call(P.A_BUCKET, params,
+                                timeout=float(self.config.safety.max_action_timeout_seconds))
+
+    # ------------------------------------------------------------ 托管 / 枪械
+
+    @Tool(
+        "mc_takeover",
+        brief_description="AI 托管：接手游戏后玩家可以放开鼠标切出去，游戏照常跑、我照常操作",
+        detailed_description=(
+            "控制「AI 托管」。开着的时候：\n"
+            "  · 游戏窗口**失焦也不会暂停**（原版单人游戏一切出去就暂停，那样我一步都走不动）；\n"
+            "  · 鼠标从游戏窗口里**放开**，玩家可以切出去干别的，不会和我抢视角。\n"
+            "默认「麦麦一连上就自动托管」，断开时自动还原。\n"
+            "\n"
+            "参数说明：\n"
+            "- enabled：boolean，可选。true 进托管、false 交还控制权；不填则切换当前状态。\n"
+            "\n"
+            "什么时候用：玩家说「你自己玩吧/我切出去了」时不用做任何事（默认就托管着）；"
+            "玩家说「我要自己玩」就用 enabled=false 把控制权还回去。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="enabled", param_type=ToolParamType.BOOLEAN,
+                              description="true 进托管，false 交还控制权，不填则切换", required=False),
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="游戏内玩家名", required=False, default=""),
+        ],
+    )
+    async def mc_takeover(self, enabled: Optional[bool] = None, player: str = "", **kwargs: Any):
+        params: dict[str, Any] = {}
+        if enabled is not None:
+            params["enabled"] = bool(enabled)
+        return await self._call(P.A_TAKEOVER, params, player=player, timeout=15.0)
+
+    @Tool(
+        "mc_shoot",
+        brief_description="用远程武器开火：弓 / 弩 / 三叉戟 / 枪械都行 —— 开火前会自动数弹药，没子弹会拒绝",
+        detailed_description=(
+            "用远程武器开火。**任何远程武器都能用**：弓、弩、三叉戟、枪械（永恒枪械工艺这类），"
+            "模组会看手上（或背包里）有什么，自动选一把。\n"
+            "\n"
+            "**开火之前一定先数弹药**：没箭/没子弹时不会空放一枪，而是明确告诉你缺什么、"
+            "去哪儿补（箭 = 燧石 + 木棍 + 羽毛）。每次开火的结果里也带剩余弹药，"
+            "剩 8 发以下会提醒你补。状态快照里的 ranged 字段随时能看到「手里这把还有几发」。\n"
+            "\n"
+            "**「响没响」以弹药真的少了为准**：结果是 fired 字段（算出来的），不是「我扣了扳机」。"
+            "枪没响时结果里会带 magazine（弹匣还剩几发）、via（这次走的是哪条路）、"
+            "taczResult（模组回的状态，例如 IS_RELOADING 正在换弹 / NO_AMMO 打空了）"
+            "和一句人话解释，照着它判断下一步。\n"
+            "\n"
+            "**弹匣清空会自动换弹**：托管期间只要你闲着、背包里还有同口径的子弹，"
+            "模组会自己补上（不用你调 reload）。所以打完一梭子看到 magazine=0 不用慌，"
+            "下一拍它自己就满了；真正要你操心的是「背包里也没子弹了」。\n"
+            "\n"
+            "参数说明：\n"
+            "- action：string，必填。\n"
+            "    · shoot  —— 开火。可以先用 target 瞄准某个实体（名字/uuid/nearest_hostile）。\n"
+            "    · reload —— 换弹，**只对枪有意义**（弓/弩/三叉戟不需要，直接 shoot）。\n"
+            "- target：string，可选。shoot 时先瞄准它再开火。\n"
+            "- ticks：integer，可选，默认 3。枪**持续开火**多少 tick（连发/打空弹匣给大一点，"
+            "例如 20 ≈ 一秒、100 能打空一整个弹匣）；弓/弩/三叉戟会自动按各自的蓄力时间拉满再放。\n"
+            "\n"
+            "什么时候该用远程：目标在天上/会飞（近战够不到）、或者你想在远处先消耗它。\n"
+            "**注意**：敌人贴到 2 格以内时，模组的自动战斗会改用近战武器（那时别再调 shoot，"
+            "用 mc_attack 更合适）。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="action", param_type=ToolParamType.STRING,
+                              description="shoot（开火）或 reload（换弹，只对枪）",
+                              required=True, enum_values=["shoot", "reload"]),
+            ToolParameterInfo(name="target", param_type=ToolParamType.STRING,
+                              description="shoot 时先瞄准的目标（名字/uuid/nearest_hostile）",
+                              required=False, default=""),
+            ToolParameterInfo(name="ticks", param_type=ToolParamType.INTEGER,
+                              description="枪持续开火多少 tick，默认 3（20≈一秒，100≈打空一个弹匣）",
+                              required=False, default=3),
+            ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
+                              description="游戏内玩家名", required=False, default=""),
+        ],
+    )
+    async def mc_shoot(self, action: str, target: str = "", ticks: int = 3,
+                       player: str = "", **kwargs: Any):
+        name = str(action).strip().lower()
+        if name not in ("reload", "shoot"):
+            return {"success": False,
+                    "content": f"action 只能是 shoot（开火）或 reload（换弹），收到「{action}」。"}
+        params: dict[str, Any] = {"ticks": max(1, int(ticks))}
+        if name == "reload":
+            # 换弹的「等多久」和开火的「按多久」不是一回事：TaCZ 要播完换弹动画才进弹
+            # （AK 大约 2.5 秒）。调用方常常沿用默认的 ticks=3，那会让模组只等 1 秒就
+            # 误报「没换成」。这里给一个够用的下限。
+            params["ticks"] = max(160, int(ticks))
+        if name == "shoot" and str(target).strip():
+            params["target"] = str(target).strip()
+        return await self._call(P.A_SHOOT if name == "shoot" else P.A_RELOAD, params,
+                                player=player,
+                                timeout=float(self.config.safety.max_action_timeout_seconds))
 
     @Tool(
         "mc_recipes",
@@ -2325,6 +2538,48 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                          + (f"，{task.get('detail')}" if task.get("detail") else ""))
         else:
             lines.append("当前空闲，没有正在执行的动作。")
+
+        # Baritone 的活不经过模组的动作队列：不单列出来的话，「当前空闲」就是句假话。
+        baritone = state.get("baritone") or {}
+        if baritone:
+            lines.append(f"Baritone：{baritone.get('command')} —— "
+                         f"{'进行中' if baritone.get('running') else '已停'}"
+                         f"（{int((baritone.get('elapsedMs') or 0) / 1000)} 秒，"
+                         f"{'在动' if baritone.get('moving') else '暂时没动'}）")
+            if baritone.get("reply"):
+                lines.append(f"  Baritone 回话：{baritone['reply']}")
+
+        # AI 托管状态：玩家能不能放开鼠标、失焦会不会暂停
+        takeover = state.get("takeover") or {}
+        if takeover.get("active"):
+            lines.append("AI 托管中：窗口失焦不会暂停，鼠标已放开（玩家可以切出去）。")
+
+        # 装了哪些相关模组 —— 决定了有哪些玩法可用
+        mods = state.get("mods") or {}
+        installed = [name for name, on in mods.items() if on and name != "forge"]
+        if installed:
+            lines.append("已装相关模组：" + "、".join(installed))
+
+        # 手上那件东西的模组信息（例如枪的弹药数字）
+        held_mod = state.get("heldModInfo") or {}
+        if held_mod.get("item"):
+            nums = held_mod.get("numbers") or []
+            detail = "，".join(f"{n.get('key')}={n.get('value')}" for n in nums[:6])
+            lines.append(f"手上（模组物品）：{held_mod.get('name')}"
+                         + (f"（{detail}）" if detail else ""))
+
+        # 远程武器状态：手里这把还有几发、要不要先换弹
+        ranged = state.get("ranged") or {}
+        if ranged.get("kind"):
+            ammo_line = (f"手上远程武器：{ranged.get('weaponName')}（{ranged.get('kind')}），"
+                         f"{ranged.get('ammoName')} {ranged.get('ammo')}")
+            if str(ranged.get("kind")) == "gun" and ranged.get("magazine") is not None:
+                ammo_line += f"，弹匣 {ranged.get('magazine')}"
+                if ranged.get("reloadNeeded"):
+                    ammo_line += "（弹匣空了 —— 托管时会自动换弹，背包里得有同口径子弹）"
+            if ranged.get("warning"):
+                ammo_line += f" —— {ranged['warning']}"
+            lines.append(ammo_line)
 
         block = look.get("block")
         if block:

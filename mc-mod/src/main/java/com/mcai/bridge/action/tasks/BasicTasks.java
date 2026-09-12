@@ -53,9 +53,17 @@ public final class BasicTasks {
                     fail("聊天内容过长（" + text.length() + " 字符，上限 256）");
                 }
                 connection.sendChat(text);
+                // 「#」开头的消息是发给 Baritone 的：记下来，好让任务状态别再报「空闲」。
+                // Baritone 不通过我们的动作队列干活，光看队列永远以为没人在做事。
+                com.mcai.bridge.util.BaritoneWatcher.onChatSent(text);
                 final JsonObject result = new JsonObject();
                 result.addProperty("sent", true);
                 result.addProperty("message", text);
+                if (text.startsWith("#")) {
+                    result.addProperty("baritone", true);
+                    result.addProperty("note", "这是给 Baritone 的指令。它异步执行，"
+                            + "进度看 task_status 里的 baritone 字段（或 mc_state）。");
+                }
                 return TaskResult.success(result);
             }
         };
@@ -314,6 +322,17 @@ public final class BasicTasks {
                 InputController.release();
                 final JsonObject result = new JsonObject();
                 result.addProperty("stopped", true);
+                // 「紧急刹车」得把 Baritone 也刹住：它的活不在我们的队列里，
+                // 只清自己的队列会出现「麦麦说停了，人还在满地图挖」。
+                if (com.mcai.bridge.util.BaritoneWatcher.shouldStopBaritone()) {
+                    final LocalPlayer player = mc.player;
+                    if (player != null && player.connection != null) {
+                        player.connection.sendChat("#stop");
+                        result.addProperty("baritoneStopped", true);
+                        result.addProperty("note", "顺手给 Baritone 也发了 #stop。");
+                    }
+                    com.mcai.bridge.util.BaritoneWatcher.markStopped();
+                }
                 return TaskResult.success(result);
             }
         };

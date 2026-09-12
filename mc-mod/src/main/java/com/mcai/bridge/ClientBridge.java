@@ -73,6 +73,12 @@ public final class ClientBridge {
     private long lastKillReport;
 
     private int snapshotTimer;
+    /** 伽马只报一次，免得刷日志。 */
+    private boolean gammaLogged;
+    /** 最近一次「谁打了我」（来自服务端受击事件）。血条 diff 那条路拿不到攻击者。 */
+    private String lastAttackerUuid = "";
+    private String lastAttackerName = "";
+    private long lastAttackerAt;
     private int crosshairTimer;
     private int inventoryTimer;
 
@@ -124,6 +130,8 @@ public final class ClientBridge {
         if (text == null || text.isBlank()) {
             return;
         }
+        // Baritone 的错误/回话也走聊天，抓一份下来（"Error at argument #2" 这种就是它说的）
+        com.mcai.bridge.util.BaritoneWatcher.onChatSeen(text);
 
         final boolean overlay = event instanceof ClientChatReceivedEvent.System system && system.isOverlay();
         if (overlay && !BridgeConfig.reportActionBar) {
@@ -178,6 +186,19 @@ public final class ClientBridge {
         // 动作执行器无论是否连上 MaiBot 都要 tick：
         // 否则断线时正在执行的动作会永远卡住，玩家一直被「幽灵按键」控制。
         ActionExecutor.get().tick(mc);
+        // Baritone 的活也在这一层盯：它不经过动作队列，只看队列会一直报「空闲」。
+        com.mcai.bridge.util.BaritoneWatcher.tick(mc);
+
+        // 伽马覆盖（夜视）：配置里设了就一直按那个值来 ——
+        // 洞穴里 lightLevel 0 时，原版画面是全黑的，改伽马是最省事的「看得见」办法。
+        applyGamma(mc);
+
+        // 托管期间兜底：失焦不暂停必须一直成立（玩家可能在设置里又打开了它）
+        com.mcai.bridge.util.Takeover.tick(mc);
+        // 主动出击：托管时附近有敌对生物就上去打（不等它先动手）
+        ActionExecutor.get().autoDefendTick(mc);
+        // 弹匣清空自动换弹：闲下来时发现手上是把空枪、背包有子弹，就自己补上
+        ActionExecutor.get().autoReloadTick(mc);
 
         if (!isConnected() || !handshakeDone) {
             return;
@@ -201,8 +222,76 @@ public final class ClientBridge {
         }
     }
 
-    /** 移动输入覆盖点：让 AI 的移动意图真正作用到玩家身上。 */
+    /**
+     * 把画面的「亮度」按配置强行拉高（模拟夜视）。
+     *
+     * <p>0 = 不碰玩家的设置。设成 10 以上时洞穴里也基本全亮 —— 这就是常说的
+     * fullbright：它改的是客户端本地的伽马值，不改变服务器上的任何东西，
+     * 也不影响游戏规则（跟开夜视药水不是一回事）。</p>
+     *
+     * <p>只在值不一致时才写，避免每 tick 都去动设置对象。</p>
+     */
+    private void applyGamma(final Minecraft mc) {
+        final double wanted = BridgeConfig.gamma;
+        if (wanted <= 0.0 || mc.options == null) {
+            return;
+        }
+        try {
+            final net.minecraft.client.OptionInstance<Double> option = mc.options.gamma();
+            final Double current = option.get();
+            if (current == null || Math.abs(current - wanted) > 0.01) {
+                option.set(wanted);
+                if (!gammaLogged) {
+                    gammaLogged = true;
+                    McAiBridge.LOGGER.info("[MaiBot Bridge] 已把画面亮度（伽马）拉到 {}（原来是 {}）——"
+                            + "夜视效果，想还原就把配置里的 visual.gamma 改成 0", wanted, current);
+                }
+            }
+        } catch (final Throwable t) {
+            // 版本差异导致 API 变化时不要让整个 tick 挂掉
+            if (BridgeConfig.verboseLog) {
+                McAiBridge.LOGGER.warn("[MaiBot Bridge] 设置伽马失败: {}", t.toString());
+            }
+        }
+    }
+
+    /**
+     * 玩家被打：**这里才是可靠的触发点**。
+     *
+     * <p>为什么不用客户端那份「血量掉了多少」的 diff：客户端的 {@code LocalPlayer}
+     * 拿不到 {@code getLastHurtByMob()} —— 攻击者是记在**服务端**那个玩家实体上的。
+     * 真机实测就是这样：连续被僵尸打了 5 下、掉血 15 点，事件里来源全是 {@code unknown}，
+     * 自动反击一次都没触发，人就那么站着被打死了。</p>
+     *
+     * <p>单机时集成的服务端和客户端在**同一个进程**里，所以 Forge 的服务端事件我们收得到：
+     * 从事件里拿攻击者，再把 uuid 交给客户端的 attack 任务（客户端自己按 uuid 找实体）。</p>
+     */
     @SubscribeEvent
+    public void onLivingHurt(final net.minecraftforge.event.entity.living.LivingHurtEvent event) {
+        final Minecraft mc = mc();
+        if (mc == null || mc.player == null) {
+            return;
+        }
+        if (!(event.getEntity() instanceof net.minecraft.world.entity.player.Player hurt)) {
+            return;
+        }
+        // 只关心「我自己」：多人服务器里别的玩家受伤也会走这里
+        if (!hurt.getUUID().equals(mc.player.getUUID())) {
+            return;
+        }
+        if (!(event.getSource().getEntity() instanceof final net.minecraft.world.entity.LivingEntity attacker)) {
+            return;   // 摔伤/溺水/岩浆：没有「反击对象」
+        }
+        lastAttackerUuid = attacker.getUUID().toString();
+        lastAttackerName = GameUtils.entityName(attacker);
+        lastAttackerAt = System.currentTimeMillis();
+        final String uuid = lastAttackerUuid;
+        final String name = lastAttackerName;
+        // 动作必须在客户端线程上跑
+        mc.execute(() -> ActionExecutor.get().autoRetaliate(uuid, name));
+    }
+
+    /** 移动输入覆盖点：让 AI 的移动意图真正作用到玩家身上。 */    @SubscribeEvent
     public void onMovementInput(final MovementInputUpdateEvent event) {
         if (event.getEntity() != mc().player) {
             return;
@@ -231,6 +320,14 @@ public final class ClientBridge {
             if (attacker != null) {
                 data.addProperty("source", GameUtils.entityTypeId(attacker));
                 data.addProperty("sourceName", GameUtils.entityName(attacker));
+            } else if (!lastAttackerName.isEmpty()
+                    && System.currentTimeMillis() - lastAttackerAt < 10_000L) {
+                // 客户端拿不到 getLastHurtByMob（那是服务端实体上的数据），
+                // 用刚才受击事件里记下的攻击者 —— 不然永远是「unknown」。
+                data.addProperty("source", "attacker");
+                data.addProperty("sourceName", lastAttackerName);
+                data.addProperty("attackerUuid", lastAttackerUuid);
+                data.addProperty("inferred", true);
             } else {
                 data.addProperty("source", "unknown");
             }
@@ -513,6 +610,11 @@ public final class ClientBridge {
                             statusCode, reason);
                 }
                 ActionExecutor.get().cancelAll("与 MaiBot 的连接已断开");
+                // 没人指挥了：把鼠标和暂停设置还给玩家，别把他的游戏晾在托管状态里。
+                final Minecraft mc = mc();
+                if (mc != null) {
+                    mc.execute(() -> com.mcai.bridge.util.Takeover.exit(mc, "连接已断开"));
+                }
             }
 
             @Override
@@ -636,6 +738,11 @@ public final class ClientBridge {
                             Json.str(data, "sessionId", "?"), Json.intVal(data, "protocol", 1));
                     final Minecraft mc = mc();
                     if (mc != null) {
+                        // 麦麦接上了 = 有人接管了：进托管（关掉失焦暂停、放开鼠标）。
+                        // 这样玩家可以切出去，AI 继续在游戏里干活。
+                        if (BridgeConfig.takeoverOnConnect) {
+                            mc.execute(() -> com.mcai.bridge.util.Takeover.enter(mc, "麦麦已接入"));
+                        }
                         mc.execute(() -> sendState("join"));
                     }
                 } else {

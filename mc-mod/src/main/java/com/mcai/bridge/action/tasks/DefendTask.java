@@ -7,6 +7,7 @@ import com.mcai.bridge.action.ActionExecutor;
 import com.mcai.bridge.action.Task;
 import com.mcai.bridge.action.TaskResult;
 import com.mcai.bridge.protocol.Json;
+import com.mcai.bridge.util.CombatKit;
 import com.mcai.bridge.util.GameUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -205,7 +206,7 @@ public final class DefendTask extends Task {
         stepKind = "";
 
         if (!ok) {
-            if ("attack".equals(kind)) {
+            if ("attack".equals(kind) || "shoot".equals(kind)) {
                 attackFailures++;
                 log.add("✗ 打" + target + "没成：" + shorten(error));
                 // 连续打不到就放弃这个目标（可能在墙后/够不着），换下一个
@@ -217,10 +218,13 @@ public final class DefendTask extends Task {
             }
             return;
         }
-        if ("attack".equals(kind)) {
+        if ("attack".equals(kind) || "shoot".equals(kind)) {
             attackFailures = 0;
             // 击杀数不在这里加：由扫描时「看到它倒下」来统计（横扫带走的也算得上）
-            log.add("✓ 打完了 " + target + "（击杀以实际倒下的为准）");
+            log.add(("shoot".equals(kind) ? "✓ 打了一轮 " : "✓ 打完了 ") + target
+                    + "（击杀以实际倒下的为准）");
+        } else if ("reload".equals(kind)) {
+            log.add("✓ 换好弹了");
         } else if ("use_item".equals(kind)) {
             // 抵御里的 use_item 只用来吃东西
             log.add("✓ 吃了点东西，血量 " + Math.round(currentHealth(mc)));
@@ -238,7 +242,26 @@ public final class DefendTask extends Task {
         if (target == null) {
             return;
         }
-        // 先看看手上是不是武器：空手打僵尸要打二十下，换上剑只要几下
+        lastTargetName = target.name();
+
+        // 手里是远程武器就用远程 —— 拿着枪还上去抡拳头，等于把枪白带了。
+        // 只看**手上那把**：手上拿什么就用什么，不去背包里翻（不然「我只想挖矿，
+        // 它却掏出枪乱打」）。枪的弹匣空了但有备弹时，先换弹再打。
+        final CombatKit.AutoMode mode = CombatKit.autoMode(player, target.distance());
+        if (mode == CombatKit.AutoMode.SHOOT) {
+            startStep("shoot", CombatKit.autoAttackParams(player, target.id(), STEP_BUDGET_MS,
+                            target.distance()),
+                    "打 " + target.name() + "（" + Math.round(target.distance()) + " 格外，用远程）");
+            return;
+        }
+        if (mode == CombatKit.AutoMode.RELOAD) {
+            startStep("reload", CombatKit.autoAttackParams(player, target.id(), STEP_BUDGET_MS,
+                            target.distance()),
+                    "先换弹再打 " + target.name());
+            return;
+        }
+
+        // 近战：先看看手上是不是武器 —— 空手打僵尸要打二十下，换上剑只要几下
         if (!isWeapon(player.getMainHandItem())) {
             final String weapon = findWeaponId(player);
             if (weapon != null) {
@@ -250,7 +273,6 @@ public final class DefendTask extends Task {
                 return;
             }
         }
-        lastTargetName = target.name();
         final JsonObject params = new JsonObject();
         params.addProperty("target", target.id());
         params.addProperty("count", 0);          // 打到死
@@ -419,9 +441,8 @@ public final class DefendTask extends Task {
     }
 
     private static boolean isWeapon(final ItemStack stack) {
-        return stack.getItem() instanceof SwordItem
-                || stack.getItem() instanceof AxeItem
-                || stack.getItem() instanceof TridentItem;
+        // 判断统一放在 CombatKit（反击那条路也要用同一套）
+        return CombatKit.isMeleeWeapon(stack);
     }
 
     private static boolean isEdible(final ItemStack stack) {
@@ -430,17 +451,7 @@ public final class DefendTask extends Task {
 
     /** 在背包里找一个能当武器用的东西：优先剑/三叉戟，其次斧头。 */
     private static String findWeaponId(final LocalPlayer player) {
-        String axe = null;
-        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
-            final ItemStack stack = player.getInventory().getItem(slot);
-            if (stack.getItem() instanceof SwordItem || stack.getItem() instanceof TridentItem) {
-                return GameUtils.itemId(stack);
-            }
-            if (axe == null && stack.getItem() instanceof AxeItem) {
-                axe = GameUtils.itemId(stack);
-            }
-        }
-        return axe;
+        return CombatKit.findMeleeWeaponId(player);
     }
 
     /** 在背包里找一个能吃的东西；没有就返回 null。 */

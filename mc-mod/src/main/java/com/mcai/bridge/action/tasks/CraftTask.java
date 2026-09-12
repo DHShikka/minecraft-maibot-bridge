@@ -701,10 +701,54 @@ public final class CraftTask extends Task {
             out.add("recipes", matches);
 
             if (matches.isEmpty()) {
+                // 没有合成台配方？那可能是**别的模组的加工方式**：Create 的粉碎/混合/辊压、
+                // 模组熔炉、枪械装配台…… 原版的 RecipeManager 里装着**所有**模组注册的配方，
+                // 翻一遍就能告诉 AI「这东西到底是怎么来的」，而不是一句「不能合成」。
+                final JsonArray other = new JsonArray();
+                final List<String> otherLines = new ArrayList<>();
+                for (final Recipe<?> candidate : manager.getRecipes()) {
+                    if (candidate.getType() == RecipeType.CRAFTING || candidate.isSpecial()) {
+                        continue;
+                    }
+                    final ItemStack result = candidate.getResultItem(mc.level.registryAccess());
+                    if (result.isEmpty() || matchKind(result, itemQuery) == MatchKind.NONE) {
+                        continue;
+                    }
+                    final String type = GameUtils.shortId(candidate.getType().toString());
+                    final JsonObject entry = new JsonObject();
+                    entry.addProperty("recipe", candidate.getId().toString());
+                    entry.addProperty("type", type);
+                    entry.addProperty("output", GameUtils.itemId(result));
+                    entry.addProperty("outputName", GameUtils.safeItemName(result));
+                    entry.addProperty("outputPerCraft", result.getCount());
+                    final JsonArray ingredients = new JsonArray();
+                    for (final Ingredient ingredient : candidate.getIngredients()) {
+                        if (!ingredient.isEmpty()) {
+                            ingredients.add(describeIngredient(ingredient));
+                        }
+                    }
+                    entry.add("ingredients", ingredients);
+                    other.add(entry);
+                    otherLines.add("· " + GameUtils.safeItemName(result) + " ×" + result.getCount()
+                            + " ← " + (ingredients.isEmpty() ? "?" : jsonToList(ingredients))
+                            + "【加工方式：" + type + "】");
+                    if (other.size() >= limit) {
+                        break;
+                    }
+                }
+                if (!other.isEmpty()) {
+                    out.add("otherRecipes", other);
+                    return TaskResult.success(withContent(out,
+                            "没有**合成台**配方，但找到了 " + other.size() + " 条别的加工方式的配方"
+                                    + "（模组机器/熔炉之类，模组得自己会用那台机器）：\n"
+                                    + String.join("\n", otherLines)));
+                }
+            }
+            if (matches.isEmpty()) {
                 return TaskResult.success(withContent(out,
-                        "没有找到能产出「" + itemQuery + "」的合成配方。"
-                                + "确认名字拼写（用原版 ID，如 oak_planks、iron_pickaxe），"
-                                + "或者这个东西需要用熔炉/其他工作站加工。"));
+                        "没有找到能产出「" + itemQuery + "」的配方（合成台和模组加工方式都翻过了）。"
+                                + "确认名字拼写 —— 中文显示名和内部 ID 都能查，"
+                                + "也可以先用 mc_inventory 看看手上有什么。"));
             }
             return TaskResult.success(withContent(out,
                     "找到 " + matches.size() + " 个配方：\n" + String.join("\n", lines)));

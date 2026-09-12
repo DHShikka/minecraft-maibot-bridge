@@ -272,6 +272,17 @@ public final class InventoryTasks {
     }
 
     /** 背包索引 → 玩家背包菜单的槽位索引。 */
+    /**
+     * 把背包第 {@code slot} 格的东西换到**当前选中的快捷栏槽位**。
+     *
+     * <p>给 {@code place} 这类「手上得先拿着」的动作复用：物品在背包里但不在快捷栏时，
+     * 与其报错让调用方再补一步，不如自己换过去。换位是发点击包，要下一个 tick 才生效。</p>
+     */
+    public static void swapIntoHotbar(final Minecraft mc, final LocalPlayer player, final int slot) {
+        final int hotbar = Math.max(0, Math.min(8, player.getInventory().selected));
+        click(mc, player, toMenuSlot(slot), hotbar, ClickType.SWAP);
+    }
+
     private static int toMenuSlot(final int inventoryIndex) {
         if (inventoryIndex >= 0 && inventoryIndex <= 8) {
             return 36 + inventoryIndex; // 快捷栏

@@ -129,6 +129,10 @@ STEPS: list[tuple[str, str, dict[str, Any], float]] = [
 #: 硬结论：结束时必须在背包里的东西。
 EXPECTED_ITEMS = {"minecraft:wooden_pickaxe": 1}
 
+#: 桶场景的硬结论：装水→倒水→装岩浆→倒岩浆四条路都走通的话，
+#: 三桶液体都倒回世界里了，背包里应该只剩 3 个空桶（一个装好的都不该剩）。
+BUCKET_EXPECTED_ITEMS = {"minecraft:bucket": 3}
+
 #: 「默认地形 + 生存 + 不作弊」场景：全程零指令，从砍树开始。
 #: 用 --survival 启动，并且客户端要带 MCAI_TERRAIN=normal MCAI_CHEATS=false。
 SURVIVAL_STEPS: list[tuple[str, str, dict[str, Any], float]] = [
@@ -161,6 +165,31 @@ BARITONE_STEPS: list[tuple[str, str, dict[str, Any], float]] = [
     ("最后停下", "chat", {"message": "#stop"}, 20),
 ]
 
+#: 桶操作场景：在脚边造一个水源和一个岩浆源，把「装水/倒水/装岩浆/倒岩浆」四条路径都走一遍。
+#: 用超平坦 + 作弊（自检环境），隔离验证桶本身，跟地形运气无关。
+BUCKET_STEPS: list[tuple[str, str, dict[str, Any], float]] = [
+    ("记录起点", "get_state", {}, 20),
+    ("把时间设成白天（上次忘了这步，玩家在夜里被刷出来的怪打死了）", "command",
+     {"command": "time set day"}, 20),
+    ("难度调成和平，专心验桶", "command", {"command": "difficulty peaceful"}, 20),
+    ("给自己 3 个空桶", "command", {"command": "give @s bucket 3"}, 20),
+    ("在脚边造一个水源", "command", {"command": "setblock ~3 ~-1 ~3 water"}, 20),
+    ("在另一边造一个岩浆源", "command", {"command": "setblock ~-3 ~-1 ~-3 lava"}, 20),
+    ("等方块生效", "wait", {"ms": 900}, 20),
+    ("确认附近有水也有岩浆", "scan_blocks",
+     {"block": "water", "radius": 8, "yRadius": 4, "limit": 3}, 20),
+    ("★ 装一桶水（自动找源头）", "bucket", {"mode": "fill", "fluid": "water", "radius": 16}, 60),
+    ("看手上是不是水桶", "get_state", {}, 20),
+    ("★ 把水倒在面前两格", "bucket",
+     {"mode": "empty", "fluid": "water", "x": "~", "y": "~", "z": "~2"}, 60),
+    ("看看那里有没有水", "scan_blocks", {"block": "water", "radius": 8, "yRadius": 4, "limit": 3}, 20),
+    ("★ 装一桶岩浆", "bucket", {"mode": "fill", "fluid": "lava", "radius": 16}, 60),
+    ("看手上是不是岩浆桶", "get_state", {}, 20),
+    ("★ 把岩浆倒在面前三格", "bucket",
+     {"mode": "empty", "fluid": "lava", "x": "~", "y": "~", "z": "~3"}, 60),
+    ("看看那里有没有岩浆", "scan_blocks", {"block": "lava", "radius": 8, "yRadius": 4, "limit": 3}, 20),
+]
+
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
@@ -172,6 +201,8 @@ async def main() -> int:
                              "MCAI_TERRAIN=normal MCAI_CHEATS=false）")
     parser.add_argument("--baritone", action="store_true",
                         help="跑 Baritone 联动场景（客户端 mods 里要有 baritone.jar）")
+    parser.add_argument("--bucket", action="store_true",
+                        help="跑桶操作场景（超平坦 + 作弊，隔离验证装/倒液体）")
     args = parser.parse_args()
 
     global STEPS
@@ -181,6 +212,9 @@ async def main() -> int:
     elif args.baritone:
         STEPS = BARITONE_STEPS
         print("[live] Baritone 联动场景：用聊天发 # 指令驱动 Baritone", flush=True)
+    elif args.bucket:
+        STEPS = BUCKET_STEPS
+        print("[live] 桶操作场景：装水/倒水/装岩浆/倒岩浆", flush=True)
 
     result: dict[str, Any] = {"success": False, "steps": []}
     plugin = load_plugin()
@@ -246,7 +280,16 @@ async def main() -> int:
             result["steps"].append(entry)
 
         # 最后再抓一次状态，看背包（注意：inventory 在状态快照的**顶层**，不在 player 里）
-        final = session.state or {}
+        #
+        # 必须**主动要一次**，而且要用**这次回包里的 result**：session.state 是模组按
+        # 自己的节奏推上来的缓存快照，直接读它拿到的可能是几步之前那份 ——
+        # 自检里这么误报过两次「四条路径都走通了却还剩一个装好的桶」。
+        try:
+            final_reply = await session.request_action("get_state", {}, timeout=20)
+            final = final_reply.get("result") or session.state or {}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live] 收尾 get_state 失败（只能用缓存快照）：{exc}", flush=True)
+            final = session.state or {}
         slots = ((final.get("inventory") or {}).get("slots")) or []
         counts: dict[str, int] = {}
         for slot in slots:
@@ -256,8 +299,9 @@ async def main() -> int:
         result["finalInventory"] = counts
         print(f"\n[live] 最终背包：{counts}", flush=True)
 
-        # 硬结论：木镐真的做出来了吗
-        missing = {k: v for k, v in EXPECTED_ITEMS.items() if counts.get(k, 0) < v}
+        # 硬结论：木镐真的做出来了吗（桶场景换成「三桶都倒空了」）
+        expected_items = BUCKET_EXPECTED_ITEMS if args.bucket else EXPECTED_ITEMS
+        missing = {k: v for k, v in expected_items.items() if counts.get(k, 0) < v}
 
         # 硬结论：抵御真的清掉怪了吗（而且没把自己搭进去）
         defends = [s for s in result["steps"] if s["action"] == "defend"]
@@ -314,11 +358,30 @@ async def main() -> int:
             if last_mine.get("minedCount", 0) < 1 or not dropped:
                 missing["auto_tool"] = f"挖石头应当自动换镐并正常掉落，实际：{last_mine}"
 
+        # 硬结论：桶的四条路径（装水/倒水/装岩浆/倒岩浆）是不是真的都走通了
+        bucket_steps = [s for s in result["steps"] if s["action"] == "bucket"]
+        for index, bucket_step in enumerate(bucket_steps, 1):
+            detail = bucket_step.get("result") or {}
+            mode = (bucket_step.get("params") or {}).get("mode")
+            verdict = "成功" if bucket_step.get("ok") else "失败"
+            print(f"[live] 桶 #{index}（{mode}）：{verdict} — "
+                  f"{detail.get('content') or bucket_step.get('error')}", flush=True)
+            if not bucket_step.get("ok"):
+                missing[f"bucket{index}"] = f"桶操作失败：{bucket_step.get('error')}"
+            elif mode == "empty" and not detail.get("pouredAt"):
+                missing[f"bucket{index}_pour"] = f"倒液体应该报出 pouredAt，实际 {detail}"
+        if bucket_steps:
+            leftover = counts.get("minecraft:water_bucket", 0) + counts.get("minecraft:lava_bucket", 0)
+            if leftover:
+                missing["bucket_leftover"] = (
+                    f"四条路径都走通的话不该还剩装好的桶，实际背包：{counts}")
+            result["bucketSteps"] = len(bucket_steps)
+
         result["missingExpected"] = missing
         if missing:
             print(f"[live] !! 未达预期：{missing}", flush=True)
         else:
-            print(f"[live] 预期都达成：{EXPECTED_ITEMS} + 抵御有击杀", flush=True)
+            print(f"[live] 预期都达成：{expected_items} + 抵御有击杀", flush=True)
 
         result["success"] = failures == 0 and not missing
         result["failures"] = failures

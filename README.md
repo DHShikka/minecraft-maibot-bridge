@@ -162,7 +162,7 @@ chatTriggerPrefix = "!ai"
 
 ### 用工具直接指挥
 
-麦麦的 LLM 侧拿到了 **26 个工具**，全部以 `mc_` 开头。你（或者麦麦自己）可以让它：
+麦麦的 LLM 侧拿到了 **29 个工具**，全部以 `mc_` 开头。你（或者麦麦自己）可以让它：
 
 | 想做的事 | 麦麦会调用 |
 |---|---|
@@ -175,16 +175,59 @@ chatTriggerPrefix = "!ai"
 | 放方块、点火把 | `mc_place` |
 | 开箱子、按按钮、用工作台 | `mc_use_on_block` |
 | **合成物品** | `mc_craft`（先 `mc_recipes` 查配方） |
+| **烧矿、烧食物** | `mc_smelt`（生铁→铁锭、沙子→玻璃） |
+| **装水/装岩浆、把桶倒空** | `mc_bucket`（做黑曜石、搭地狱门靠它） |
+| **交给 Baritone 去跑图/找矿** | `mc_baritone`（寻路、挖矿、探索、挖隧道） |
 | 看背包里有什么 | `mc_inventory` |
 | 吃东西、拉弓、举盾 | `mc_use` |
 | 打怪、打人 | `mc_attack` |
 | **抵御（会自己判断打/吃/撤）** | `mc_defend` |
+| **被打就自动还手（举盾 / 用弓打天上的）** | 模组自己的行为，不用下发动作（见下） |
 | 换手上的东西 | `mc_equip` |
 | 找矿、找箱子、找怪 | `mc_scan_blocks` / `mc_scan_entities` |
 | 睡觉跳过夜晚 | `mc_sleep` |
 | 在游戏里说话 | `mc_chat` |
 | 执行指令 | `mc_command` |
 | 紧急刹车 | `mc_stop` |
+
+> **装了 Baritone 的话，寻路和找矿优先用 `mc_baritone`**：它是成熟的寻路机器人，
+> 绕障碍、搭桥、挖穿、垫脚都会自己做，比模组自带的那套强。
+> 我们是**用它的聊天指令**驱动它的（`#goto`、`#mine 64 dirt`…），零依赖 ——
+> 没装 Baritone 时这些消息就只是普通聊天，不会崩。细节见 [docs/BARITONE.md](docs/BARITONE.md)。
+>
+> **它的活会算进「任务状态」**：Baritone 干活时不经过模组的动作队列，
+> 所以模组里有个活动监视，把「在跑哪条指令、还在不在动、有没有报错」并进
+> `mc_task_status` / `mc_state` —— 否则这边一直显示「空闲」，麦麦会以为没人在做事。
+> `mc_stop` 也会顺手给它发一条 `#stop`。
+
+### 模组自己的三个「保命」行为
+
+这些**不需要麦麦下发动作**，是模组直接做的（配置在 `config/mcai_bridge-client.toml`）：
+
+| 配置 | 默认 | 行为 |
+|---|---|---|
+| `[combat] autoFight` | `true` | **被生物打了就立刻还手**：中断手上的活（挖矿/放置/走路）、转身打回去 |
+| `[combat] autoAttackHostiles` | `true` | **主动出击**：托管时附近有敌对生物就上去打（贴脸 ≤6 格会打断手头的活） |
+| `[combat] useShield` | `true` | 有盾牌就自动换到**副手**，敌人靠近就举盾格挡 |
+| `[combat] useBow` | `true` | 目标在天上/会飞（近战够不到）时自动换弓，按距离算下坠提前量，拉满一秒再放箭 |
+| `[takeover] autoOnConnect` | `true` | **AI 托管**：麦麦一连上就接管 —— 关掉失焦暂停、放开鼠标，玩家可以切出去，AI 照常操作 |
+| `[visual] gamma` | `0.0` | 把画面亮度强行拉到指定值 → **夜视 / fullbright**（`10` 基本全亮；`0` = 不动你的设置） |
+
+细节（包括为什么反击必须「打断」、为什么贴脸要打断手头的活、为什么倒水要倒在岩浆**旁边**）
+见 [`docs/ACTIONS.md`](docs/ACTIONS.md) 的战斗与 `bucket` 两节。
+
+### 和别的模组怎么配合
+
+原则是**软依赖**：没装那些模组时对应功能只是「用不上」，不会崩，也不需要它们在编译期存在。
+
+| 模组 | 怎么配合 |
+|---|---|
+| **Baritone** | 聊天指令驱动（`mc_baritone`），活动并进任务状态；`mc_stop` 会顺手 `#stop` |
+| **JEI / 任意模组** | 物品名解析直接翻**注册表**：内部 ID、**中文显示名**、模糊包含都能匹配（`mc_craft` / `mc_recipes` / `mc_inventory` / `mc_equip` 都吃这套）。`mc_recipes` 找不到合成台配方时会**翻遍所有配方类型**，把「Create 的粉碎/混合、模组机器」这类加工方式也报出来 |
+| **永恒枪械工艺等枪械 / 远程武器** | `mc_shoot`：**弓、弩、三叉戟、枪械都能用**（自动选一把）。开火前**先数弹药**，没子弹会拒绝而不是空放；`reload` 按模组注册的换弹键 |
+| **机械动力 Create** | 方块按普通方块挖/放；扳手就是 `use_on_block` 右键；它的加工配方走上面那条「翻遍所有配方类型」 |
+| 环境自述 | 状态快照里带 `mods`（jei/tacz/create/baritone 装了没）和 `ranged`（手上武器的剩余弹药），AI 随时看得见 |
+
 
 举个例子，让它「做一把石剑」它会自己拆成：
 
@@ -289,7 +332,8 @@ allow_actions = ["chat", "get_state", "mc_state", "mc_query", "mc_list_clients",
 
 - 模组只能看见**客户端已经加载的区块**（也就是玩家附近）。远处的方块/生物扫不到，这是原版机制决定的，不是 bug。
 - 寻路按 Baritone 的思路重写过（见 [`docs/BARITONE.md`](docs/BARITONE.md)）：会绕障碍、上台阶、下落、**跳缺口**、**挖穿挡路的方块**、**向下挖矿道**、**垫方块翻墙**。跨不过去的情况会说明「最后停在哪、为什么」。
-- **还没实现**：沿梯子/藤蔓攀爬、船/矿车/鞘翅、水桶落地、按图纸建筑、按矿物列表批量采矿。这些 Baritone 有，我们没有。
+  **装了真正的 Baritone 时，长距离移动和找矿优先交给它**（`mc_baritone`）。
+- **还没实现**：沿梯子/藤蔓攀爬、船/矿车/鞘翅、按图纸建筑（schematic）—— 这些 Baritone 有，我们没有。
 - AI 的动作受原版规则约束：够不到就够不到、没材料就放不了、服务器没权限的指令就是会失败。所有失败都会带着原因回传给麦麦，它会自己想别的办法。
 
 ---
@@ -306,7 +350,7 @@ python tools/check_plugin.py
 
 它会：语法检查 → 按 MaiBot 的 `ManifestValidator` 规则校验 `_manifest.json` → 用签名一致的假 SDK 加载 `plugin.py` 并模拟 Runner 的组件发现 → **起一个真的 WebSocket 服务端**，扮演模组跑完整链路（握手、聊天注入、工具调用、动作回传、任务组下发、事件上报、断线）。
 
-当前结果：**167 项全部通过**。
+当前结果：**196 项全部通过**。
 
 ### 真机自检（开真的 Minecraft，跑真的动作）
 
@@ -321,7 +365,7 @@ python tools/live_server.py
 node tools/run-client.mjs --selftest
 ```
 
-进去之后全自动：模组连上插件 → 插件下发 13 个动作 → 结果是
+进去之后全自动：模组连上插件 → 插件下发十几个动作 → 结果是
 `.research/live-result.json`。它覆盖的东西是别的方式验证不到的：
 
 | 验证项 | 说明 |
@@ -336,8 +380,44 @@ node tools/run-client.mjs --selftest
 | **抵御** | 召唤 3 只僵尸，`defend` 自己换上铁剑清掉 3 只，血量 20→20，附近威胁归零 |
 | 断线重连 | 杀掉服务端后模组自动退避重试，重起服务端就自己连回来了 |
 
+场景可以选（默认那个是「从零做一把木镐」的全流程）：
+
+```powershell
+python tools/live_server.py --bucket     # 桶：装水/倒水/装岩浆/倒岩浆
+python tools/live_server.py --baritone   # Baritone 联动（mods 里要有 baritone.jar）
+python tools/live_server.py --survival   # 默认地形 + 生存 + 不作弊
+```
+
+`--bucket` 那一轮的结果（四条路径全绿）：装水 0.8s、倒水 0.6s、装岩浆 1.0s、倒岩浆 0.6s，
+世界里能扫到倒出来的水和岩浆，最后背包是**三个空桶** —— 液体装走又倒回去了。
+**水桶这件事在真机上曾经完全不通**（对着水点 6 次，桶还是空的），根因写在
+[`docs/ACTIONS.md`](docs/ACTIONS.md) 的 `bucket` 一节里：装和倒都得走 `useItem`，
+而且判断成功不能只看手上那一格。
+
 自检入口（`selftest/SelfTest.java`）只在 `-Dmcai.selftest` 存在时生效，正常启动游戏时
 第一个 tick 就什么都不干。
+
+#### 跑长任务时的几个开关
+
+搭一座地狱门要砍树、挖矿、烧铁、找岩浆，跨越几十分钟甚至几次重启游戏，
+所以自检入口还有几个给长任务用的开关（`tools/run-client.mjs` 会从环境变量转成 JVM 参数）：
+
+| 环境变量 | 作用 |
+|---|---|
+| `MCAI_KEEP_WORLD=1` | **读旧存档接着玩**（默认每次新建，长任务必须开这个） |
+| `MCAI_KEEP_INVENTORY=true` | 建世界时写 `keepInventory`：**死亡不掉落**（真机会被怪打死，掉光装备等于重来） |
+| `MCAI_AUTO_RESPAWN`（默认开） | 死了自动重生。原版会停在「你死了」界面等人点按钮 —— 无人值守时就是**卡死** |
+| `MCAI_TERRAIN=normal` / `MCAI_CHEATS=false` | 默认地形 / 不开作弊 |
+| `MCAI_QUIT_AFTER=<秒>` | 进世界后到点自动退出 |
+
+> **别用 `Stop-Process -Force` 杀客户端。** 硬杀会丢掉还没写盘的那部分进度 ——
+> 实测丢过一次「2 个桶 + 盾牌」（背包回滚到几分钟前，但人物坐标是新的）。
+> 想重启就让它在游戏目录里看到一个 **`mcai-quit.flag`**：自检入口会走 `mc.stop()`
+> 正常存档再退。
+>
+> 另外：单人游戏**窗口失焦会自动暂停**，而暂停时集成的服务端不 tick ——
+> 表现是「玩家一步都走不动、指令执行了但方块在客户端上不变」。
+> 自检模式会关掉这个（`pauseOnLostFocus`），游戏日志里的原话是 "Saving and pausing game..."。
 
 ### 跨语言互通（Java 客户端 ↔ Python 服务端）
 

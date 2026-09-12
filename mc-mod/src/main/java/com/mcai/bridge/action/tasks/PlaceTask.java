@@ -118,8 +118,15 @@ public final class PlaceTask extends Task {
             if (equipSlot >= 0 || !equipItem.isBlank()) {
                 final Inventory inv = player.getInventory();
                 final int slot = equipSlot >= 0 ? equipSlot : InventoryTasks.findSlot(inv, equipItem);
-                if (slot < 0 || slot > 8) {
-                    fail("要放置的物品「" + equipItem + "」不在快捷栏里。请先用 equip 把它换到快捷栏。");
+                if (slot < 0) {
+                    fail("背包里没有「" + equipItem + "」，放不了。");
+                }
+                if (slot > 8) {
+                    // 东西在背包里但没在快捷栏：**自己换过去**，别让调用方再补一步。
+                    // 真机上就是这么卡住的：熔炉刚合成在 34 号槽，place 直接说
+                    // 「不在快捷栏里」—— 明明背包里有，却要 AI 再想一轮。
+                    InventoryTasks.swapIntoHotbar(mc, player, slot);
+                    return null;   // 换位要一个 tick 才生效
                 }
                 inv.selected = slot;
             }

@@ -86,17 +86,27 @@ A_JUMP_ON_BLOCK = "jump_on_block"
 A_CRAFT = "craft"
 #: 熔炼：在熔炉里烧（原矿→铁锭、沙子→玻璃…）
 A_SMELT = "smelt"
+#: 桶：装液体 / 倒液体（做黑曜石必需）
+A_BUCKET = "bucket"
+#: 向下挖阶梯矿道
+A_DIG_SHAFT = "dig_shaft"
 #: 查询配方（只读，不改动世界）
 A_RECIPES = "recipes"
 #: 任务组：一次下发一整段脚本，模组本地连续执行（省掉「每步一轮思考」）
 A_SCRIPT = "script"
+#: AI 托管：麦麦接手后玩家可以放开鼠标切出去，游戏照常跑（关失焦暂停 + 放开鼠标）
+A_TAKEOVER = "takeover"
+#: 枪械换弹（永恒枪械工艺这类：按它注册的换弹键）
+A_RELOAD = "reload"
+#: 开枪（枪械的射击是「按住攻击键」，和原版近战不是一回事）
+A_SHOOT = "shoot"
 
 ALL_ACTIONS = (
     A_CHAT, A_COMMAND, A_LOOK, A_MOVE_TO, A_MOVE_RELATIVE, A_FOLLOW, A_STOP, A_JUMP,
     A_SNEAK, A_SPRINT, A_MINE, A_MINE_BLOCKS, A_PLACE, A_USE_ITEM, A_USE_ON_BLOCK,
     A_ATTACK, A_EQUIP, A_DROP, A_GET_STATE, A_SCAN_BLOCKS, A_SCAN_ENTITIES, A_SLEEP,
     A_WAIT, A_CANCEL, A_TASK_STATUS, A_JUMP_ON_BLOCK, A_CRAFT, A_RECIPES, A_SCRIPT, A_DEFEND,
-    A_SMELT,
+    A_SMELT, A_BUCKET, A_DIG_SHAFT, A_TAKEOVER, A_RELOAD, A_SHOOT,
 )
 
 # ---------------------------------------------------------------- 事件类型

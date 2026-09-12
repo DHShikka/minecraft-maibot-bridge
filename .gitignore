@@ -46,3 +46,7 @@ desktop.ini
 
 # Forge/Minecraft 日志（无头跑测试时也会生成）
 logs/
+
+# Python 字节码（本地跑测试就会生成，不该进仓库）
+__pycache__/
+*.pyc

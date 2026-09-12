@@ -147,6 +147,26 @@ mc_script(preset="mine_until", preset_params={"item": "cobblestone", "count": 64
 | `chest` | 做箱子（含工作台） | — |
 | `mine_until` | 一直挖到背包里有够数为止（条件循环） | `item`、`block`、`count` |
 | `mine_then_craft` | 挖够材料再合成（挖矿 + 条件循环 + 合成） | `item`、`block`、`count`、`craft`、`craft_count` |
+| `defend_area` | 守在这里：有敌对生物就清掉，清干净就收工 | `radius`、`max_rounds` |
+
+> `mine_then_craft` 解决的是「差一点材料」这一类来回：先 `mine_until` 攒够，再 `craft`。
+> `defend_area` 用脚本层的 `while` + `attack` 表达「守着」，好处是**每一步都看得见**；
+> 想要「会自保的抵御」（残血先吃、被围就撤、挑目标优先级）直接用 `mc_defend`。
+
+**脚本里能用的动作**就是协议动作总表里的那些（见 [PROTOCOL.md](PROTOCOL.md) 第 5 节），
+包括 `smelt`（烧矿）、`bucket`（装/倒液体）、`dig_shaft`（往下挖阶梯矿道）——
+这三个没有单独的工具，但写进脚本一样跑。例如：
+
+```json
+{"name": "备一桶岩浆和两桶水",
+ "steps": [
+   {"action": "dig_shaft", "params": {"depth": 24}},
+   {"action": "mine_blocks", "params": {"block": "iron_ore", "count": 3}},
+   {"action": "smelt", "params": {"item": "iron_ingot", "count": 3}},
+   {"action": "craft", "params": {"item": "bucket", "count": 3}},
+   {"action": "bucket", "params": {"mode": "fill", "fluid": "lava"}}
+ ]}
+```
 
 写错预设名会给出候选（`nope_pickaxe` → 「是不是想用 `stone_pickaxe`？」），
 写错参数名会列出这个预设支持哪些参数。预设展开成的是**普通脚本** ——

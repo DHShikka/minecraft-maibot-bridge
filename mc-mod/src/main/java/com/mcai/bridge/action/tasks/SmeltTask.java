@@ -509,4 +509,13 @@ public final class SmeltTask extends Task {
     protected double realProgress() {
         return produced;
     }
+
+    @Override
+    protected boolean watchdogApplies() {
+        // 熔炼是**天生就慢**的活：原版烧一个东西就是 10 秒，而且这 10 秒里玩家站着不动、
+        // 方块也不变。卡死检测（24 秒无位移无进展）会把正常的熔炼判成卡住 ——
+        // 真机上就是这么在「已出 1/7」的时候被掐断的。
+        // 这里跟 bucket 一样交给自己判：要么烧完，要么超时，都不会无限等。
+        return false;
+    }
 }

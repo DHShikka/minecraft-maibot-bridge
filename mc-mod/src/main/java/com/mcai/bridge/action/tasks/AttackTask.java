@@ -33,6 +33,10 @@ public final class AttackTask extends Task {
 
     /** 原版近战距离是 3.0，留一点余量防止因为走位抖动而打空。 */
     private static final double ATTACK_RANGE = 2.9;
+    /** 拉满弓大约 1 秒（20 tick），多给两 tick 保证是「满蓄力」。 */
+    private static final int DRAW_TICKS = 22;
+    /** 一个目标最多射几箭就收手（别把箭全射光）。 */
+    private static final int MAX_SHOTS = 12;
 
     private final String targetKey;
     private final int maxHits;
@@ -45,6 +49,9 @@ public final class AttackTask extends Task {
     private int swings;
     private int lostTicks;
     private float healthBefore = -1;
+    /** 射了几箭、当前拉弓还剩几 tick（用弓时才用得上）。 */
+    private int shots;
+    private int drawTicks;
 
     private AttackTask(final String id, final JsonObject params, final long timeoutMs,
                        final String targetKey, final int maxHits, final long durationMs) {
@@ -125,6 +132,24 @@ public final class AttackTask extends Task {
 
         final double distance = player.distanceTo(target);
 
+        // ---------------------------------------------------------- 先决定「怎么打」
+        //
+        // 顺序很重要：能不能用近战，取决于目标在不在天上 —— 飞着的（幻翼/烈焰人/恶魂）
+        // 或者高出一大截的，走过去也是白走，直接换弓。
+        if (com.mcai.bridge.util.CombatKit.isAirborne(player, target)) {
+            return tickShoot(mc, player, target);
+        }
+
+        // 举盾：附近有敌意就举着。格挡不减移速，举着不亏；
+        // 真机上「被打的时候手上还在挖矿」是最容易被白打的场景。
+        if (com.mcai.bridge.BridgeConfig.useShield) {
+            if (!com.mcai.bridge.util.CombatKit.hasShieldEquipped(player)) {
+                com.mcai.bridge.util.CombatKit.ensureShield(mc, player);
+            } else if (distance < 12.0) {
+                com.mcai.bridge.util.CombatKit.raiseShield(mc, player);
+            }
+        }
+
         // ---------------------------------------------------------- 够不到就走过去
         if (distance > ATTACK_RANGE) {
             if (navigator == null) {
@@ -198,7 +223,67 @@ public final class AttackTask extends Task {
             out.addProperty("initialHealth", round(healthBefore));
         }
         out.addProperty("killed", false);
+        if (shots > 0) {
+            out.addProperty("shots", shots);
+        }
         return out;
+    }
+
+    /**
+     * 目标在天上（会飞，或者高出一大截）：换弓射。
+     *
+     * <p>拉弓要分三个 tick 阶段：换手 → 拉满（约 1 秒）→ 松手放箭。
+     * 一口气「举弓 + 立刻松手」是射不出去的（原版要拉满才有伤害和射程）。</p>
+     */
+    private TaskResult tickShoot(final Minecraft mc, final LocalPlayer player, final Entity target) {
+        final String name = GameUtils.entityName(target);
+        if (!com.mcai.bridge.BridgeConfig.useBow) {
+            fail("目标「" + name + "」在天上/会飞，近战够不到，而模组配置里关掉了用弓（allow.useBow）。");
+        }
+        if (!com.mcai.bridge.util.CombatKit.hasBow(player)) {
+            fail("目标「" + name + "」在天上（高差 "
+                    + String.format(Locale.ROOT, "%.1f", target.getY() - player.getY())
+                    + " 格），近战够不到，手上也没有弓。"
+                    + "弓 = 3 根木棍 + 3 根线（打蜘蛛掉线）；箭 = 燧石 + 木棍 + 羽毛（打鸡掉羽毛）。");
+        }
+        if (com.mcai.bridge.util.CombatKit.countArrows(player) <= 0) {
+            fail("有弓但没箭了。箭 = 燧石 + 木棍 + 羽毛（打鸡掉羽毛）。");
+        }
+        if (shots >= MAX_SHOTS) {
+            final JsonObject out = summary("射了 " + shots + " 箭仍未击落，先停手（可能距离太远或它一直在动）");
+            out.addProperty("targetHealth", round(((LivingEntity) target).getHealth()));
+            return TaskResult.success(out);
+        }
+
+        // 阶段 1：把弓拿到手上（换手要一个 tick 才生效）
+        if (!player.getMainHandItem().is(net.minecraft.world.item.Items.BOW)) {
+            com.mcai.bridge.util.CombatKit.holdBow(player, mc);
+            return null;
+        }
+        // 举着弓的时候不用盾（同一只手）
+        com.mcai.bridge.util.CombatKit.lowerShield(mc, player);
+
+        // 阶段 2：松手放箭
+        if (drawTicks > 0) {
+            drawTicks--;
+            com.mcai.bridge.util.CombatKit.aimWithLead(player, target, 3.0);
+            if (drawTicks == 0) {
+                mc.gameMode.releaseUsingItem(player);
+                shots++;
+            }
+            return null;
+        }
+
+        // 阶段 3：拉弓
+        if (!player.isUsingItem()) {
+            com.mcai.bridge.util.CombatKit.aimWithLead(player, target, 3.0);
+            mc.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+            drawTicks = DRAW_TICKS;
+            return null;
+        }
+        // 拉弓中持续跟瞄（目标会动）
+        com.mcai.bridge.util.CombatKit.aimWithLead(player, target, 3.0);
+        return null;
     }
 
     private Vec3 aimPoint(final Entity target) {

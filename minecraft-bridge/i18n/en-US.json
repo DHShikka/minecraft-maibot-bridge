@@ -30,6 +30,8 @@
   "tool.mc_takeover": "AI takeover: release the mouse and keep the world running while the AI plays",
   "tool.mc_shoot": "Fire any ranged weapon: bow, crossbow, trident or gun. Ammo is checked first.",
   "tool.mc_forage": "Go find food: hay bales into bread, hunt animals, loot chests — try each until fed",
+  "tool.mc_learn": "Remember what worked: server rules, pitfalls, and successful approaches",
+  "tool.mc_recall": "Search the lesson database for how to do something",
   "tool.mc_look_at": "Make the character look at a target",
   "tool.mc_equip": "Switch the held item",
   "tool.mc_drop": "Drop items",

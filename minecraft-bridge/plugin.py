@@ -27,6 +27,7 @@ import asyncio
 import difflib
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -698,6 +699,20 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         日志里有完整 traceback，QQ 发 ``/mc`` 或在游戏里问也能看到。
         """
         self._load_error = ""
+        # 经验库：把「这样做是对的」写进 sqlite，之后能查出来照着做。
+        # 放在 on_load 里开库，失败也不影响插件启动（学不到东西不该把桥接拖下水）。
+        try:
+            from mcai_bridge.knowledge import open_knowledge
+            base = os.path.dirname(os.path.abspath(__file__))
+            self.knowledge = open_knowledge(os.path.join(base, "data", "knowledge.db"))
+            if getattr(self.knowledge, "available", False):
+                info = self.knowledge.stats()
+                logger.info("经验库已就绪：%s 条（%s）", info.get("total"), info.get("path"))
+            else:
+                logger.warning("经验库打开失败（不影响桥接）：%s", self.knowledge.path)
+        except Exception as exc:  # noqa: BLE001
+            self.knowledge = None
+            logger.warning("经验库不可用（不影响桥接）：%s", exc)
         try:
             await self._startup()
         except Exception as exc:  # noqa: BLE001 - 见上面的说明，绝不能往外抛
@@ -1729,6 +1744,82 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         return await self._call(P.A_FORAGE, {"bread": max(1, int(bread))},
                                 player=player,
                                 timeout=float(self.config.safety.max_action_timeout_seconds))
+
+    @Tool(
+        "mc_learn",
+        brief_description="把「这样做是对的」记进经验库（下次还能查出来照着做）",
+        detailed_description=(
+            "把一条**经验**写进数据库。适合记的东西：\n"
+            "· 这台服务器/这个存档的**规矩**（装了哪个模组、有哪些可用命令、哪个命令没权限）；\n"
+            "· **踩过的坑**（「这个方块用工具挖不掉」「合成前得先有工作台」）；\n"
+            "· **成功的做法**（「想要面包就去割干草块，比种地快」）。\n"
+            "不要记一次性的东西（坐标、临时状态）—— 那些查 mc_state 就有。\n"
+            "同样的 topic + title 会**覆盖**旧内容（改主意了就再记一次）。\n"
+            "参数说明：\n"
+            "- topic：string，必填。分类关键词，例如 ftbessentials / craft / food / combat。\n"
+            "- title：string，必填。一句话结论（查的时候先看这句）。\n"
+            "- body：string，必填。具体怎么做，可以多行。\n"
+            "- source：string，可选。human（人教的）/ learned（自己试出来的），默认 learned。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="topic", param_type=ToolParamType.STRING,
+                              description="分类关键词，例如 ftbessentials、craft、food", required=True),
+            ToolParameterInfo(name="title", param_type=ToolParamType.STRING,
+                              description="一句话结论", required=True),
+            ToolParameterInfo(name="body", param_type=ToolParamType.STRING,
+                              description="具体怎么做（可以多行）", required=True),
+            ToolParameterInfo(name="source", param_type=ToolParamType.STRING,
+                              description="human（人教的）或 learned（自己试的），默认 learned",
+                              required=False, default="learned"),
+        ],
+    )
+    async def mc_learn(self, topic: str, title: str, body: str, source: str = "learned",
+                       **kwargs: Any):
+        if self.knowledge is None or not getattr(self.knowledge, "available", False):
+            return {"success": False, "content": "经验库不可用（sqlite 没打开成功），这条没记上。"}
+        lesson_id = self.knowledge.remember(topic, title, body, source or "learned")
+        if lesson_id < 0:
+            return {"success": False,
+                    "content": "没记上：topic/title/body 不能为空（topic 缺省是 general）。"}
+        return {"success": True, "id": lesson_id,
+                "content": f"已记进经验库（#{lesson_id}，{topic}）：{title}\n"
+                           f"以后用 mc_recall 就能查出来。"}
+
+    @Tool(
+        "mc_recall",
+        brief_description="查经验库：以前记下的「该怎么做」",
+        detailed_description=(
+            "按关键词或分类查以前记下的经验（做某个操作之前先查一下，能少走弯路）。\n"
+            "不传参数就返回**最常用的几条**（按「人教的 > 自己试的 > 预置」和命中次数排）。\n"
+            "参数说明：\n"
+            "- query：string，可选。关键词，多个词用空格分开（命中标题或正文任一即可）。\n"
+            "- topic：string，可选。只看某个分类，例如 baritone。\n"
+            "- limit：integer，可选。最多返回几条，默认 5。"
+        ),
+        parameters=[
+            ToolParameterInfo(name="query", param_type=ToolParamType.STRING,
+                              description="关键词（空格分开），留空则返回最常用的几条",
+                              required=False, default=""),
+            ToolParameterInfo(name="topic", param_type=ToolParamType.STRING,
+                              description="只看某个分类，例如 ftbessentials", required=False, default=""),
+            ToolParameterInfo(name="limit", param_type=ToolParamType.INTEGER,
+                              description="最多返回几条，默认 5", required=False, default=5),
+        ],
+    )
+    async def mc_recall(self, query: str = "", topic: str = "", limit: int = 5, **kwargs: Any):
+        if self.knowledge is None or not getattr(self.knowledge, "available", False):
+            return {"success": False, "content": "经验库不可用（sqlite 没打开成功）。"}
+        rows = self.knowledge.recall(query, topic, limit)
+        if not rows:
+            hint = "没查到经验。" + (
+                "（这个分类还是空的）" if topic.strip() else "（换个关键词，或者先用 mc_learn 记一条）")
+            return {"success": True, "content": hint, "lessons": []}
+        lines = []
+        for r in rows:
+            src = {"human": "人教的", "learned": "自己试的", "seed": "预置"}.get(r["source"], r["source"])
+            lines.append(f"【{r['topic']}】{r['title']}（{src}，用过 {r['score']} 次，#{r['id']}）\n{r['body']}")
+        return {"success": True, "lessons": rows,
+                "content": f"查到 {len(rows)} 条经验：\n\n" + "\n\n".join(lines)}
 
     @Tool(
         "mc_place",

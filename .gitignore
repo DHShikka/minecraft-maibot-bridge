@@ -50,3 +50,6 @@ logs/
 # Python 字节码（本地跑测试就会生成，不该进仓库）
 __pycache__/
 *.pyc
+
+# 插件的运行时数据（经验库 sqlite 由代码里的 SEED 生成，不进仓库）
+minecraft-bridge/data/

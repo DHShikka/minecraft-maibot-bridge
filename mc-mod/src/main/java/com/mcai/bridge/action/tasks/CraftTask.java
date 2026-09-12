@@ -341,6 +341,14 @@ public final class CraftTask extends Task {
             stageTicks = 0;
             return null;
         }
+        // 再按「已经点成功的次数」兜一道 —— 每次循环正好合成一次，craftedTotal 是硬事实。
+        // 光靠背包计数不行：真机上出现过计数被材料串味（64 颗钻石算成 64 件胸甲）导致
+        // 这个判断永远不成立，于是一路点下去把材料用光，最后卡到看门狗超时。
+        if (craftedTotal >= wantedCount) {
+            stage = Stage.FINISH;
+            stageTicks = 0;
+            return null;
+        }
         if (craftedTotal >= maxCrafts) {
             stage = Stage.FINISH;
             stageTicks = 0;
@@ -549,7 +557,7 @@ public final class CraftTask extends Task {
         final String needle = query.trim().toLowerCase(Locale.ROOT);
         final String id = GameUtils.itemId(stack).toLowerCase(Locale.ROOT);
         final String shortId = GameUtils.shortId(id);
-        if (id.equals(needle) || shortId.equals(needle)) {
+        if (!needle.isEmpty() && (id.equals(needle) || shortId.equals(needle))) {
             return MatchKind.EXACT;
         }
         final String hover;
@@ -561,11 +569,18 @@ public final class CraftTask extends Task {
         if (hover.equals(needle)) {
             return MatchKind.EXACT;
         }
-        if (shortId.contains(needle) || needle.contains(shortId)
-                || hover.contains(needle) || needle.contains(hover)) {
-            return MatchKind.FUZZY;
-        }
-        return MatchKind.NONE;
+        // 模糊：**查询词是物品名的一部分**（"chestplate" → diamond_chestplate）。
+        //
+        // 这里以前还有反过来的两条 —— `needle.contains(shortId)` / `needle.contains(hover)`，
+        // 意思是「查询词里包含物品名」。那两条是个灾难：查 "diamond_chestplate" 时，
+        // 钻石的 shortId "diamond" 是查询词的子串，于是**钻石被当成钻石胸甲**。
+        // 后果（真机事故「要做一套钻石套，结果做了一堆钻石胸甲」）：
+        //   · countItem 在开始前就把 64 颗钻石算成 64 件胸甲 → startCount=64，
+        //     循环里 `have - startCount >= 1` 永远不成立，于是一直点、把材料用光、
+        //     卡到看门狗超时；
+        //   · 结果里 received = 8 - 64 = -56，AI 以为「一件都没做出来」，于是再要一次。
+        // 只保留「查询词更短」这一个方向。
+        return shortId.contains(needle) || hover.contains(needle) ? MatchKind.FUZZY : MatchKind.NONE;
     }
 
     /** 背包里是否凑得出这个配方的材料（贪心逐个消耗，够用来挑配方就够了）。 */
@@ -634,22 +649,38 @@ public final class CraftTask extends Task {
         return matchKind(stack, spec) != MatchKind.NONE;
     }
 
-    /** 统计背包里某个物品的总数。 */
+    /**
+     * 统计背包里某个物品的总数。
+     *
+     * <p><b>精确匹配优先</b>：只要背包里存在精确命中的物品，就只数它们 ——
+     * 否则「查 diamond_chestplate 顺手把钻石也数进去」这种串味会让调用方
+     * 拿到一个虚高的数字（合成循环靠它判断「做够了没有」，数错就永远做不完）。</p>
+     */
     public static int countItem(final LocalPlayer player, final String query) {
         final net.minecraft.world.entity.player.Inventory inv = player.getInventory();
-        int total = 0;
+        int exact = 0;
+        int fuzzy = 0;
         for (int slot = 0; slot < inv.getContainerSize(); slot++) {
             final ItemStack stack = inv.getItem(slot);
-            if (!stack.isEmpty() && matchKind(stack, query) != MatchKind.NONE) {
-                total += stack.getCount();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            switch (matchKind(stack, query)) {
+                case EXACT -> exact += stack.getCount();
+                case FUZZY -> fuzzy += stack.getCount();
+                default -> { }
             }
         }
         // 副手也算
         final ItemStack offhand = player.getOffhandItem();
-        if (!offhand.isEmpty() && matchKind(offhand, query) != MatchKind.NONE) {
-            total += offhand.getCount();
+        if (!offhand.isEmpty()) {
+            switch (matchKind(offhand, query)) {
+                case EXACT -> exact += offhand.getCount();
+                case FUZZY -> fuzzy += offhand.getCount();
+                default -> { }
+            }
         }
-        return total;
+        return exact > 0 ? exact : fuzzy;
     }
 
     private void buildRecipeInfo(final Minecraft mc, final LocalPlayer player) {

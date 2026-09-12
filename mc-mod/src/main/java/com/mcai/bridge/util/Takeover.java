@@ -105,6 +105,10 @@ public final class Takeover {
      * 把鼠标重新抓进去** —— 那 AI 就又会被冻住/和玩家抢鼠标，所以托管期间每 tick 拉回来。</p>
      */
     public static void tick(final Minecraft mc) {
+        // 死亡自动重生：**不依赖托管**，任何时候都生效。
+        // 为什么必须自己点：托管时鼠标是放开的，没人去按「重生」按钮，死亡界面会一直挂着 ——
+        // AI 也就一直卡在死亡界面上什么都干不了（这是真机上「死了以后就不动了」的原因）。
+        autoRespawn(mc);
         if (!active || mc == null || mc.options == null) {
             return;
         }
@@ -124,6 +128,51 @@ public final class Takeover {
             }
         } catch (final Throwable ignored) {
             // 忽略
+        }
+    }
+
+    /** 死亡时刻（用于「死后再等 2 秒」再重生）。 */
+    private static long diedAt;
+
+    /**
+     * 死了就自己重生，不用点「重生」按钮。
+     *
+     * <p>要点有两个，少一个都会卡住：</p>
+     * <ol>
+     *   <li>{@code mc.player.respawn()} —— 这才是真的重生（发指令给服务端）；</li>
+     *   <li>把 {@code DeathScreen} 关掉（{@code setScreen(null)})—— 只调 respawn 而不关界面的话，
+     *       死亡界面会继续挂在屏幕上，玩家看着「已经重生了但界面还在」，AI 的操作也会被界面挡住。</li>
+     * </ol>
+     *
+     * <p>延迟 2 秒是为了让死亡界面露一下脸（能看清是被什么打死的），而不是一死就闪过去。</p>
+     */
+    private static void autoRespawn(final Minecraft mc) {
+        if (mc == null || mc.player == null) {
+            return;
+        }
+        final boolean dead = mc.player.isDeadOrDying() || mc.player.getHealth() <= 0.0F
+                || mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen;
+        if (!dead) {
+            diedAt = 0L;
+            return;
+        }
+        if (diedAt == 0L) {
+            diedAt = System.currentTimeMillis();
+            McAiBridge.LOGGER.info("[MaiBot Bridge] 玩家死亡（{}），2 秒后自动重生（不用点）",
+                    mc.player.blockPosition().toShortString());
+            return;
+        }
+        if (System.currentTimeMillis() - diedAt > 2000L) {
+            diedAt = 0L;
+            try {
+                mc.player.respawn();
+            } catch (final Throwable t) {
+                McAiBridge.LOGGER.warn("[MaiBot Bridge] 自动重生失败（忽略）: {}", t.toString());
+            }
+            if (mc.screen instanceof net.minecraft.client.gui.screens.DeathScreen) {
+                mc.setScreen(null);
+            }
+            McAiBridge.LOGGER.info("[MaiBot Bridge] 已自动重生");
         }
     }
 

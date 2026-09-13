@@ -123,6 +123,42 @@ public final class BasicTasks {
         };
     }
 
+    // ------------------------------------------------------------ Baritone 回话
+
+    /**
+     * {@code baritone_reply}：Baritone 刚说了什么。
+     *
+     * <p>它的回话是直接打进聊天栏的（不走服务端报文），Forge 的聊天事件收不到，
+     * 所以从游戏日志里捞 —— 细节见 {@link com.mcai.bridge.util.BaritoneChatLog}。</p>
+     *
+     * <p>返回里 {@code lines} 是「自上次调用以来新出现的」（发指令前先调一次当快照，
+     * 发完再调一次就是它的回话），{@code tail} 是日志里最近的几条，方便对不上时排查。</p>
+     */
+    public static Task baritoneReply(final String id, final JsonObject params, final boolean instant) {
+        return new Task(id, "baritone_reply", params, 5_000L, false, false) {
+            @Override
+            protected TaskResult onTick(final Minecraft mc) {
+                final JsonObject out = new JsonObject();
+                final com.google.gson.JsonArray fresh = new com.google.gson.JsonArray();
+                final java.util.List<String> lines = com.mcai.bridge.util.BaritoneChatLog.collectNew();
+                for (final String line : lines) {
+                    fresh.add(line);
+                }
+                out.add("lines", fresh);
+                out.addProperty("count", lines.size());
+                final com.google.gson.JsonArray all = new com.google.gson.JsonArray();
+                for (final String line : com.mcai.bridge.util.BaritoneChatLog.tail()) {
+                    all.add(line);
+                }
+                out.add("tail", all);
+                out.addProperty("content", lines.isEmpty()
+                        ? "Baritone 没有新回话（可能这条指令在它这个版本上不回话，或者它没装）。"
+                        : String.join(" / ", lines));
+                return TaskResult.success(out);
+            }
+        };
+    }
+
     // ---------------------------------------------------------------- 关界面
 
     /**

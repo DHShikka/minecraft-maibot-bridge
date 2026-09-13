@@ -51,6 +51,20 @@ public final class BaritoneWatcher {
     private static long lastReplyAt;
     /** 上一条 Baritone 指令之后有没有真的动过（用来区分「还没起步」和「干完了」）。 */
     private static boolean everMoved;
+    /** 被 {@code #pause} 暂停了（这时候「没动静」是正常的，不该报成卡住）。 */
+    private static boolean paused;
+
+    /**
+     * 哪些指令是「让 Baritone 干活」的。
+     *
+     * <p>为什么要区分：{@code #proc}、{@code #eta}、{@code #wp l}、{@code #saveall}
+     * 这些是**查询/维护**指令 —— 它们不产生任何移动。以前一律记成「上一条任务」，
+     * 于是问一句 {@code #version}，状态里就会显示「Baritone：#version —— 下了指令但一直没动静
+     * —— 可能没装 Baritone」这种假警报。</p>
+     */
+    private static final java.util.Set<String> TASK_COMMANDS = java.util.Set.of(
+            "goto", "mine", "explore", "tunnel", "farm", "follow", "thisway", "come",
+            "goal", "path", "axis", "invert", "surface", "build", "home", "sel", "find");
 
     private BaritoneWatcher() {
     }
@@ -60,6 +74,43 @@ public final class BaritoneWatcher {
         if (message == null || !message.startsWith("#")) {
             return;
         }
+        final String body = message.substring(1).trim();
+        final String[] parts = body.isEmpty() ? new String[0] : body.split("\\s+");
+        final String head = parts.length == 0 ? "" : parts[0].toLowerCase(java.util.Locale.ROOT);
+
+        // 不管哪种 # 指令，先把上一条回话清掉 —— 回话是给「刚发出去的这条」用的，
+        // 留着旧回话会让「它到底回了什么」张冠李戴。
+        lastReply = "";
+        lastReplyAt = 0;
+
+        // 控制类：停 / 暂停 / 继续
+        if (head.equals("stop") || head.equals("cancel") || head.equals("forcecancel")) {
+            markStopped();
+            return;
+        }
+        if (head.equals("pause")) {
+            paused = true;
+            lastActivityAt = System.currentTimeMillis();   // 别把「暂停」当成卡死
+            return;
+        }
+        if (head.equals("resume")) {
+            paused = false;
+            lastActivityAt = System.currentTimeMillis();
+            return;
+        }
+
+        // 路径点：只有 wp goto / wp g 才是「去某地」这个任务，wp l / i / d / s 都是查询或管理。
+        if (head.equals("wp")) {
+            final String sub = parts.length > 1 ? parts[1].toLowerCase(java.util.Locale.ROOT) : "";
+            if (!sub.equals("g") && !sub.equals("goto")) {
+                return;
+            }
+        } else if (!TASK_COMMANDS.contains(head)) {
+            // 查询 / 维护类（proc、eta、version、help、paused、saveall、reloadall、gc…）：
+            // 它们不产生移动，记成任务只会在状态里造出假进度。
+            return;
+        }
+
         final long now = System.currentTimeMillis();
         lastCommand = message.trim();
         commandAt = now;
@@ -69,7 +120,7 @@ public final class BaritoneWatcher {
         moving = false;
         sawActivity = false;
         everMoved = false;
-        lastReply = "";
+        paused = false;
     }
 
     /**
@@ -121,7 +172,7 @@ public final class BaritoneWatcher {
 
     /** 有没有一条「还在跑」的 Baritone 指令。 */
     public static boolean active() {
-        return !lastCommand.isEmpty()
+        return !paused && !lastCommand.isEmpty()
                 && System.currentTimeMillis() - lastActivityAt < IDLE_MS;
     }
 
@@ -132,10 +183,13 @@ public final class BaritoneWatcher {
         }
         final long now = System.currentTimeMillis();
         final long idleMs = now - lastActivityAt;
-        final boolean running = idleMs < IDLE_MS;
+        final boolean running = !paused && idleMs < IDLE_MS;
         final JsonObject o = new JsonObject();
         o.addProperty("command", lastCommand);
         o.addProperty("running", running);
+        if (paused) {
+            o.addProperty("paused", true);
+        }
         o.addProperty("elapsedMs", now - commandAt);
         o.addProperty("idleMs", idleMs);
         o.addProperty("moving", running && moving);
@@ -149,6 +203,9 @@ public final class BaritoneWatcher {
     }
 
     private static String note(final boolean running) {
+        if (paused) {
+            return "已经被 #pause 暂停了（要接着干就 resume，要放弃就 stop）";
+        }
         if (running) {
             return moving ? "Baritone 正在移动" : "Baritone 正在干活（可能正在挖）";
         }
@@ -167,7 +224,8 @@ public final class BaritoneWatcher {
         }
         final StringBuilder sb = new StringBuilder();
         sb.append(json.get("command").getAsString());
-        sb.append(json.get("running").getAsBoolean() ? "（进行中 " : "（已停 ");
+        final boolean pausedNow = json.has("paused") && json.get("paused").getAsBoolean();
+        sb.append(pausedNow ? "（已暂停 " : (json.get("running").getAsBoolean() ? "（进行中 " : "（已停 "));
         sb.append(json.get("elapsedMs").getAsLong() / 1000).append(" 秒）");
         if (json.has("reply")) {
             sb.append(" 回话：").append(json.get("reply").getAsString());
@@ -182,6 +240,7 @@ public final class BaritoneWatcher {
 
     /** 主动标记「已经让它停了」。 */
     public static void markStopped() {
+        paused = false;
         if (lastCommand.isEmpty()) {
             return;
         }

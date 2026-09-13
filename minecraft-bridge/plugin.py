@@ -28,6 +28,7 @@ import difflib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -366,24 +367,28 @@ def _summarize_script(script: dict[str, Any]) -> str:
     return f"{label}{count} 个顶层步骤"
 
 
-def _baritone_command(action: str, *, target: str = "", x: Any = None, y: Any = None,
-                      z: Any = None, count: int = 0) -> str:
-    """把工具参数拼成 Baritone 的聊天指令。
+def _baritone_commands(action: str, *, target: str = "", x: Any = None, y: Any = None,
+                       z: Any = None, count: int = 0) -> "list[str] | str":
+    """把工具参数拼成 Baritone 的聊天指令（可能不止一条，例如 status = proc + eta）。
 
-    返回以 ``!`` 开头表示参数有问题（后面是给 LLM 的原因）。
+    返回 ``str`` 表示参数有问题（以 ``!`` 开头，后面是给 LLM 的原因）；
+    返回 ``list[str]`` 就是按顺序要发出去的指令。
 
     Baritone 的指令前缀默认是 ``#``，它拦截**聊天消息**（不是 ``/指令``），
     所以我们走 chat 动作，而不是 command。
+
+    下面这些写法的依据是 v1.10.1 的**真机逐条实测**（见经验库 baritone 那条）：
+    哪些有回话、哪些要参数、哪些在 1.10.1 上根本没有，都是照着实际回话记的。
     """
     t = str(target).strip()
     if action == "goto":
         if x is not None and z is not None:
             if y is not None:
-                return f"#goto {int(x)} {int(y)} {int(z)}"
-            return f"#goto {int(x)} {int(z)}"
+                return [f"#goto {int(x)} {int(y)} {int(z)}"]
+            return [f"#goto {int(x)} {int(z)}"]
         if not t:
             return "!action=goto 要么给 x/y/z 坐标，要么给 target（方块名，例如 iron_ore）。"
-        return f"#goto {t}"
+        return [f"#goto {t}"]
     if action == "mine":
         if not t:
             return "!action=mine 需要 target（要挖什么，例如 iron_ore、#minecraft:logs）。"
@@ -391,28 +396,69 @@ def _baritone_command(action: str, *, target: str = "", x: Any = None, y: Any = 
         # 之前写成 `#mine dirt 10` 会报 "Error at argument #2: Expected w" ——
         # 它把 10 当成又一个方块名了。
         if int(count) > 0:
-            return f"#mine {int(count)} {t}"
-        return f"#mine {t}"
+            return [f"#mine {int(count)} {t}"]
+        return [f"#mine {t}"]
     if action == "explore":
-        return "#explore"
+        return ["#explore"]
     if action == "tunnel":
         height = int(count) if int(count) > 0 else 2
-        return f"#tunnel {height}"
+        return [f"#tunnel {height}"]
     if action == "come":
-        return "#come"
+        return ["#come"]
     if action == "follow":
         if not t:
             return "!action=follow 需要 target（玩家名）。"
-        return f"#follow player {t}"
+        return [f"#follow player {t}"]
     if action == "thisway":
-        return f"#thisway {int(count) if int(count) > 0 else 100}"
+        return [f"#thisway {int(count) if int(count) > 0 else 100}"]
     if action == "build":
         if not t:
             return "!action=build 需要 target（schematic 名字，要放在 Baritone 的 schematics 目录里）。"
-        return f"#build {t}"
+        return [f"#build {t}"]
+    if action == "surface":
+        return ["#surface"]
+    if action == "farm":
+        return ["#farm"]
     if action == "stop":
-        return "#stop"
+        return ["#stop"]
+    if action == "pause":
+        return ["#pause"]
+    if action == "resume":
+        return ["#resume"]
+    if action == "status":
+        # 它自己有两个信息指令：proc 说「在跑什么」，eta 说「还要多久」。
+        return ["#proc", "#eta"]
+    if action == "paused":
+        return ["#paused"]
+    if action == "version":
+        return ["#version"]
+    if action == "help":
+        return [f"#help {t}" if t else "#help"]
+    if action == "wp_save":
+        return [f"#wp s {t}" if t else "#wp s"]
+    if action == "wp_list":
+        return ["#wp l"]
+    if action in ("wp_info", "wp_go", "wp_delete"):
+        if not t:
+            return f"!action={action} 需要 target（路径点名字）。先 action=wp_list 看看有哪些。"
+        verb = {"wp_info": "i", "wp_go": "goto", "wp_delete": "d"}[action]
+        return [f"#wp {verb} {t}"]
+    if action == "saveall":
+        return ["#saveall"]
+    if action == "reloadall":
+        return ["#reloadall"]
     return f"!不认识的 Baritone 动作：{action}"
+
+
+def _baritone_command(action: str, **kwargs: Any) -> str:
+    """老接口：只关心「发哪一条」的场合（多条指令时给第一条）。"""
+    out = _baritone_commands(action, **kwargs)
+    return out if isinstance(out, str) else out[0]
+
+
+#: Baritone 拿「可点击列表」画出来的那几行，落到日志里只剩这些噪声（#wp l 就是）。
+#: 全是分隔线/翻页标记的行没有信息量，直接滤掉比丢给模型强。
+_BARITONE_NOISE = re.compile(r"^(?:-+|<<\s*\|\s*>>.*|Click to .*)$")
 
 
 # ============================================================================
@@ -1889,12 +1935,20 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
     @Tool(
         "mc_use_on_block",
-        brief_description="右键点击某个方块（开箱子、按按钮、用工作台、开门…）",
+        brief_description="右键点击某个方块（开箱子、按按钮、用工作台、开门…），会告诉你界面开没开",
         detailed_description=(
             "对着指定方块右键交互，和真人右键完全一致。\n"
             "参数说明：\n"
             "- x、y、z：必填。要交互的方块坐标。整数或 \"~\" 相对坐标都行（\"~\" 是自己脚下那一格）。\n"
-            "- face：string，可选。从哪一面点，可选 up/down/north/south/east/west。"
+            "- face：string，可选。从哪一面点，可选 up/down/north/south/east/west。\n"
+            "  不给的话模组会自己挑一个朝向玩家的面。\n"
+            "\n"
+            "返回里有两件**判断成没成**的关键信息：\n"
+            "- distance：点击时离目标多远（够不够得着，看这个；服务端对超过 6 格的交互直接丢包，"
+            "而客户端照样会回 SUCCESS，所以光看 result 会被骗）。\n"
+            "- screenOpened：点完之后界面有没有弹出来（**这是最硬的证据**）。开箱子/工作台/熔炉这类，"
+            "界面开了就是真的成了；不开也可能是正常的（按钮、拉杆、门、耕地本来就不开界面）。\n"
+            "  界面开着的时候记得用 mc_close_screen 关掉再干别的。"
         ),
         parameters=[
             ToolParameterInfo(name="x", param_type=ToolParamType.STRING,
@@ -1909,8 +1963,27 @@ class MinecraftBridgePlugin(MaiBotPlugin):
     )
     async def mc_use_on_block(self, x: Any = None, y: Any = None, z: Any = None,
                               face: str = "", **kwargs: Any):
-        return await self._call(P.A_USE_ON_BLOCK, {"x": x, "y": y, "z": z, "face": face},
-                                timeout=float(self.config.safety.max_action_timeout_seconds))
+        response = await self._call(P.A_USE_ON_BLOCK, {"x": x, "y": y, "z": z, "face": face},
+                                    timeout=float(self.config.safety.max_action_timeout_seconds))
+        if not response.get("success"):
+            return response
+        return {**response, "content": self._render_use_on_block(response.get("result") or {})}
+
+    def _render_use_on_block(self, result: dict[str, Any]) -> str:
+        """把右键的结果说清楚：点了哪个方块、离多远、界面开没开。"""
+        head = (f"右键了 {result.get('clickedBlock')} @ {result.get('clickedPos')}"
+                f"（{result.get('face')} 面，距离 {result.get('distance')} 格），"
+                f"服务端回执 {result.get('result')}")
+        if result.get("screenOpened"):
+            tail = (f"—— 界面开了：{result.get('screen')}"
+                    + (f"（标题「{result.get('screenTitle')}」）" if result.get("screenTitle") else "")
+                    + "。这次交互确实生效了；界面开着的时候要干别的先 mc_close_screen。")
+            return f"{head}\n{tail}"
+        if result.get("screen"):
+            return f"{head}\n{result.get('note') or ''}"
+        if result.get("note"):
+            return f"{head}\n{result['note']}"
+        return head
 
     @Tool(
         "mc_use",
@@ -2219,21 +2292,51 @@ class MinecraftBridgePlugin(MaiBotPlugin):
     #: Baritone 的子命令 → 对应它的聊天指令。用它自己的指令而不是 API：
     #: Baritone 的 jar 是混淆的（api 包只剩几个类），而聊天指令是**稳定接口**；
     #: 而且这样做到零依赖 —— 没装 Baritone 时这些消息只是普通聊天，不会崩。
+    #:
+    #: 这份清单是拿 v1.10.1 逐条发过一遍、看聊天栏实际回话挑出来的
+    #: （哪些有回话、哪些要参数、哪些 1.10.1 上根本没有，见经验库 baritone 那条）。
     BARITONE_ACTIONS: ClassVar[dict[str, str]] = {
+        # 干活
         "goto": "走到某个坐标或某种方块（会自己绕障碍、搭桥、挖穿）",
         "mine": "找并挖某种方块，直到挖够数量（按方块类型找，不是挖眼前）",
         "explore": "自己往外探索找新地形（找岩浆、找结构都靠它）",
         "tunnel": "往前挖一条隧道（指定高度）",
+        "farm": "自动收/种附近的作物",
+        "surface": "走到地表（已经在高处时它会说 No higher location found）",
         "come": "走到我（调用者）身边",
         "follow": "跟着某个玩家/实体",
         "thisway": "朝当前朝向走 N 格",
         "build": "按 schematic 建造（需要 Baritone 的 schematics 目录里有文件）",
+        # 任务控制
+        "pause": "暂停当前任务（之后可以 resume 接着干，进度不丢）",
+        "resume": "继续被暂停的任务",
         "stop": "停下 Baritone 的一切动作",
+        # 问情况（会等它回话再返回）
+        "status": "问它现在在跑什么、还要多久（#proc + #eta）",
+        "paused": "问它现在是不是暂停状态",
+        "version": "查 Baritone 版本",
+        "help": "查指令帮助（target 可给具体指令名，例如 help target=goto）",
+        # 路径点（记地方、以后自己去）
+        "wp_save": "存一个路径点（target 给名字；不给就自动命名）",
+        "wp_list": "列出所有路径点",
+        "wp_info": "查某个路径点的坐标（target 给名字）",
+        "wp_go": "走到某个路径点（target 给名字）",
+        "wp_delete": "删掉某个路径点（target 给名字）",
+        # 维护
+        "saveall": "把 Baritone 的设置存盘",
+        "reloadall": "重新加载 Baritone 的设置",
+    }
+
+    #: 这些动作「发出去就该有回话」，值得等它把话说完再返回给模型。
+    #: 其余的（goto/mine/explore…）是异步长活，发完就返回，进展看 mc_state。
+    BARITONE_REPLY_ACTIONS: ClassVar[set] = {
+        "status", "paused", "version", "help", "pause", "resume", "surface", "farm",
+        "saveall", "reloadall", "wp_save", "wp_list", "wp_info", "wp_go", "wp_delete",
     }
 
     @Tool(
         "mc_baritone",
-        brief_description="调用 Baritone：寻路/挖矿/探索/挖隧道/建造（比模组自带的动作强得多，装了 Baritone 就该用它）",
+        brief_description="调用 Baritone：寻路/挖矿/探索/挖隧道/路径点/暂停继续（比模组自带的动作强得多，装了 Baritone 就该用它）",
         detailed_description=(
             "把任务交给 **Baritone** 执行。Baritone 是成熟的寻路机器人，"
             "寻路、找矿、探图、挖隧道这些它都比模组自带的那套强——绕障碍、搭桥、挖穿、垫脚都会自己做。\n"
@@ -2247,32 +2350,54 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                 "mine": "找并挖 target 指定的方块（例如 iron_ore、#minecraft:logs），count 给挖几个",
                 "explore": "自己往外探图找新地形（找岩浆湖、找结构用它）",
                 "tunnel": "往前挖隧道，height 给隧道高度（默认 2）",
+                "farm": "自动收/种附近的作物",
+                "surface": "走到地表",
                 "come": "走到调用者（玩家）身边",
                 "follow": "跟着 target 指定的玩家",
                 "thisway": "朝当前朝向走 count 格",
                 "build": "按 target 指定的 schematic 建造",
+                "pause": "暂停当前任务（进度不丢，之后 resume 接着干）",
+                "resume": "继续被暂停的任务",
                 "stop": "停下 Baritone 的一切动作",
+                "status": "问它现在在跑什么、还要多久（会把它的回话一起带回来）",
+                "version": "查 Baritone 版本",
+                "help": "查指令帮助（target 可给指令名）",
+                "wp_save": "存路径点（target 给名字）—— 以后可以用 wp_go 自己走回来",
+                "wp_list": "列出所有路径点",
+                "wp_info": "查路径点坐标（target 给名字）",
+                "wp_go": "走到某个路径点（target 给名字）",
+                "wp_delete": "删掉某个路径点（target 给名字）",
+                "saveall": "把 Baritone 的设置存盘",
+                "reloadall": "重新加载 Baritone 的设置",
             }.items()) + "\n"
-            "- target：string，可选。方块名（iron_ore、#minecraft:logs）、玩家名、或 schematic 名。\n"
+            "- target：string，可选。方块名（iron_ore、#minecraft:logs）、玩家名、路径点名、或 schematic 名。\n"
             "- x、y、z：整数，可选。goto 的目标坐标。\n"
-            "- count：integer，可选。mine 挖几个 / thisway 走几格。\n"
+            "- count：integer，可选。mine 挖几个 / thisway 走几格 / tunnel 的高度。\n"
             "\n"
             "例子：\n"
             "  action=goto, x=100, y=64, z=-200    走到那个坐标\n"
             "  action=goto, target=iron_ore        自己找铁矿石并走过去\n"
             "  action=mine, target=iron_ore, count=8   挖 8 个铁矿石\n"
-            "  action=explore                      出去探图（找岩浆/找结构）\n"
+            "  action=wp_save, target=矿洞入口      在当前位置存一个叫「矿洞入口」的路径点\n"
+            "  action=wp_go, target=矿洞入口        以后从任何地方走回矿洞入口\n"
+            "  action=status                       问它现在在干什么、还要多久\n"
+            "  action=pause / action=resume        暂停 / 继续（换任务前先 pause 比 stop 好，进度还在）\n"
             "  action=stop                         立刻停下\n"
             "\n"
-            "注意：Baritone 是**异步**的——指令发出去它就自己开始干了，不会等做完才返回。"
-            "发完可以用 mc_state 看它在做什么，或者用 mc_task_status。要停就 action=stop。"
+            "注意：\n"
+            "- goto/mine/explore 这类是**异步**的：指令发出去它自己就开始干了，不会等做完才返回。"
+            "发完用 mc_state 看它在做什么，或者用 mc_task_status。\n"
+            "- status/version/help/wp_* 这类是**查询**：工具会等它回话，并把它的原话一起返回。\n"
+            "- pause 之后状态里会写「已暂停」，不要把它当成卡住；resume 接着干。"
         ),
         parameters=[
             ToolParameterInfo(name="action", param_type=ToolParamType.STRING,
-                              description="goto / mine / explore / tunnel / come / follow / thisway / build / stop",
+                              description="goto / mine / explore / tunnel / farm / surface / come / follow / "
+                                          "thisway / build / pause / resume / stop / status / version / help / "
+                                          "wp_save / wp_list / wp_info / wp_go / wp_delete / saveall / reloadall",
                               required=True, enum_values=list(BARITONE_ACTIONS)),
             ToolParameterInfo(name="target", param_type=ToolParamType.STRING,
-                              description="方块名 / 玩家名 / schematic 名", required=False, default=""),
+                              description="方块名 / 玩家名 / 路径点名 / schematic 名 / 指令名", required=False, default=""),
             ToolParameterInfo(name="x", param_type=ToolParamType.INTEGER,
                               description="goto 的目标 X", required=False),
             ToolParameterInfo(name="y", param_type=ToolParamType.INTEGER,
@@ -2280,7 +2405,7 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             ToolParameterInfo(name="z", param_type=ToolParamType.INTEGER,
                               description="goto 的目标 Z", required=False),
             ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER,
-                              description="mine 挖几个 / thisway 走几格", required=False, default=0),
+                              description="mine 挖几个 / thisway 走几格 / tunnel 高度", required=False, default=0),
             ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
                               description="指定游戏客户端", required=False, default=""),
         ],
@@ -2293,13 +2418,67 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                     "content": f"不认识的 Baritone 动作「{action}」。可用：" +
                                "、".join(self.BARITONE_ACTIONS)}
 
-        text = _baritone_command(name, target=target, x=x, y=y, z=z, count=count)
-        if isinstance(text, str) and text.startswith("!"):
-            return {"success": False, "content": text[1:]}
+        texts = _baritone_commands(name, target=target, x=x, y=y, z=z, count=count)
+        if isinstance(texts, str):
+            return {"success": False, "content": texts[1:]}
 
-        result = await self._call(P.A_CHAT, {"message": text}, player=player, timeout=20.0)
-        if not result.get("success"):
-            return result
+        # 查询类：先把「已经见过的回话」清掉 —— 这样待会儿捞到的就是**这条指令**的回话
+        wants_reply = name in self.BARITONE_REPLY_ACTIONS
+        if wants_reply:
+            await self._call(P.A_BARITONE_REPLY, {}, player=player, timeout=15.0)
+
+        result: dict[str, Any] = {}
+        for index, text in enumerate(texts):
+            sent = await self._call(P.A_CHAT, {"message": text}, player=player, timeout=20.0)
+            if not sent.get("success"):
+                return sent
+            if index == 0:
+                result = sent
+            if len(texts) > 1:
+                # 插件默认每秒 20 个动作，两条指令之间留一点间隔，别把自己限速了
+                await asyncio.sleep(0.3)
+
+        # ---- 查询类：等它把话说完，把原话一起带回去
+        #
+        # 为什么值得等：Baritone 的回话（"Paused"、"Waypoint added"、
+        # "Error at argument #2: Expected w"）才是真正有用的信息 —— 比「已下发」有用得多。
+        #
+        # 两条来路都试：① 模组从**游戏日志**里捞（它的回话是直接打进聊天栏的，
+        # 不走服务端报文，所以 Forge 的聊天事件收不到 —— 真机验证过）；
+        # ② 模组抓到的聊天事件里的 reply（万一哪天它改走报文了）。
+        if wants_reply:
+            await asyncio.sleep(0.9)
+            replies = await self._call(P.A_BARITONE_REPLY, {}, player=player, timeout=15.0)
+            lines = [str(x) for x in ((replies.get("result") or {}).get("lines") or [])]
+            raw_count = len(lines)
+            # 它有些回话是拿「可点击列表」画出来的，落到日志里只剩分隔线（#wp l 就是这样）。
+            # 这种噪声对模型没用，滤掉；滤完不剩东西就说明白，别让模型以为它什么都没说。
+            lines = [x for x in lines if not _BARITONE_NOISE.match(x.strip())]
+            state = await self._call(P.A_GET_STATE, {}, player=player, timeout=15.0)
+            baritone = (state.get("result") or {}).get("baritone") or {}
+            event_reply = str(baritone.get("reply") or "").strip()
+            for candidate in ([event_reply] if event_reply else []):
+                if candidate not in lines:
+                    lines.append(candidate)
+
+            head = "已发给 Baritone：" + "、".join(texts)
+            if lines:
+                return {"success": True, "content": f"{head}\nBaritone 回话：" + "\n".join(lines),
+                        "baritone_command": texts, "reply": lines[-1], "replies": lines}
+            if raw_count:
+                return {
+                    "success": True,
+                    "baritone_command": texts,
+                    "content": (f"{head}\n它回话了，但内容全是可点击列表的分隔线（{raw_count} 行），"
+                                f"日志里读不出有用信息。换个查法：路径点用 action=wp_info target=<名字> "
+                                f"能拿到坐标，任务情况用 action=status。"),
+                }
+            return {
+                "success": True,
+                "baritone_command": texts,
+                "content": (f"{head}\n（没抓到 Baritone 的回话。可能它没装，或者这条指令在 1.10.1 上不回话。"
+                            f"可以用 mc_query 看最近聊天，或者 mc_state 看 baritone 字段。）"),
+            }
 
         # ---- 挖矿：Baritone 自己知道挖几个（数量在指令里），但我们仍然盯两件事：
         #      背包里的数量（够了没）+ 它还在不在动（是在干活还是停了/卡了）。
@@ -2339,11 +2518,11 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             return result
 
         result["content"] = (
-            f"已交给 Baritone：{text}\n"
+            f"已交给 Baritone：{'、'.join(texts)}\n"
             "Baritone 是异步执行的，它会自己开始干；想停下就 mc_baritone(action=\"stop\")，"
-            "想看进展用 mc_state。"
+            "想暂停就 action=pause（进度不丢），想看进展用 mc_state 或 action=status。"
         )
-        result["baritone_command"] = text
+        result["baritone_command"] = texts
         return result
 
     @Tool(

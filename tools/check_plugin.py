@@ -1216,6 +1216,76 @@ async def check_end_to_end(plugin: Any) -> None:
         check(not no_target.get("success") and "target" in str(no_target.get("content")),
               "mc_baritone mine 缺 target 时本地拦下", str(no_target.get("content"))[:100])
 
+        # ---- 新接进来的那批指令（pause/resume/status/wp_*/…）
+        #
+        # 依据是 v1.10.1 的真机逐条实测（经验库 baritone 那条）：这些指令确实有回话，
+        # 可以放心放进白名单。这里只验证「拼出来的指令对不对」+「回话有没有带回来」。
+        if baritone_mod is not None and hasattr(baritone_mod, "_baritone_commands"):
+            cmds = baritone_mod._baritone_commands
+            check(list(cmds("pause")) == ["#pause"] and list(cmds("resume")) == ["#resume"],
+                  "pause/resume → #pause / #resume",
+                  str(cmds("pause")) + str(cmds("resume")))
+            check(list(cmds("status")) == ["#proc", "#eta"],
+                  "status 会问两条：在跑什么（#proc）+ 还要多久（#eta）",
+                  str(cmds("status")))
+            check(list(cmds("wp_save", target="矿洞")) == ["#wp s 矿洞"]
+                  and list(cmds("wp_go", target="矿洞")) == ["#wp goto 矿洞"]
+                  and list(cmds("wp_list")) == ["#wp l"]
+                  and list(cmds("wp_info", target="矿洞")) == ["#wp i 矿洞"]
+                  and list(cmds("wp_delete", target="矿洞")) == ["#wp d 矿洞"],
+                  "路径点：存/列/查/去/删 都拼对（#wp s|goto|l|i|d）",
+                  str([cmds("wp_save", target="a"), cmds("wp_go", target="a"), cmds("wp_list")]))
+            check(list(cmds("help", target="goto")) == ["#help goto"]
+                  and list(cmds("help")) == ["#help"],
+                  "#help 可以带指令名，也可以不带", str(cmds("help", target="goto")))
+            check(list(cmds("wp_go"))[0].startswith("!") if isinstance(cmds("wp_go"), str)
+                  else str(cmds("wp_go")).startswith("!"),
+                  "wp_go 缺 target 时本地拦下", str(cmds("wp_go")))
+            check(list(cmds("surface")) == ["#surface"] and list(cmds("farm")) == ["#farm"]
+                  and list(cmds("saveall")) == ["#saveall"],
+                  "surface/farm/saveall 也拼对了")
+
+        await asyncio.sleep(1.1)
+        await plugin.mc_baritone(action="pause")
+        pause_action = await client.expect_action("chat", timeout=5)
+        check(((pause_action.get("data") or {}).get("params") or {}).get("message") == "#pause",
+              "mc_baritone pause 发的是 #pause")
+
+        # 查询类会把 Baritone 的回话带回来 —— 回话才是真正有用的东西。
+        # 它的回话是直接打进聊天栏的（不走服务端报文），所以模组从**游戏日志**里捞：
+        # baritone_reply 返回「自上次问以来新出现的行」。这里两条来路各测一次。
+        client.custom_results["baritone_reply"] = {
+            "lines": ["Paused"], "count": 1, "tail": ["v1.10.1", "Paused"],
+            "content": "Paused",
+        }
+        client.custom_results.pop("get_state", None)
+        paused_reply = await plugin.mc_baritone(action="pause")
+        await client.expect_action("chat", timeout=5)
+        check("Paused" in str(paused_reply.get("content")),
+              "查询类动作把 Baritone 的回话一起带回给模型（从游戏日志里捞的那条路）",
+              str(paused_reply.get("content"))[:160])
+        check(paused_reply.get("reply") == "Paused",
+              "回话同时放在 reply 字段里（方便上层程序化使用）",
+              str(paused_reply.get("reply")))
+
+        # 日志里也没有、事件里也没有 → 如实说没抓到，不能假装成功
+        client.custom_results["baritone_reply"] = {"lines": [], "count": 0, "tail": []}
+        nothing = await plugin.mc_baritone(action="version")
+        await client.expect_action("chat", timeout=5)
+        check("没抓到" in str(nothing.get("content")),
+              "抓不到回话时如实说没抓到", str(nothing.get("content"))[:160])
+
+        # #wp l 的回话是「可点击列表」，落到日志里只剩分隔线 —— 滤掉，并给出更好的查法
+        client.custom_results["baritone_reply"] = {
+            "lines": ["--", "--", "--", "<< | >> 1/1"], "count": 4, "tail": [],
+        }
+        noisy = await plugin.mc_baritone(action="wp_list")
+        await client.expect_action("chat", timeout=5)
+        ntext2 = str(noisy.get("content"))
+        check("分隔线" in ntext2 and "wp_info" in ntext2,
+              "回话全是列表分隔线时说清楚，并指出更好的查法", ntext2[:200])
+        client.custom_results.pop("baritone_reply", None)
+
         # ---- Baritone 的状态必须出现在任务状态里
         #
         # 背景：Baritone 干活时不经过模组的动作队列，所以 task_status 会说「空闲」——
@@ -1396,6 +1466,38 @@ async def check_end_to_end(plugin: Any) -> None:
         check(not failed.get("success"), "模组回传失败时工具正确报告失败")
         check("测试用失败" in str(failed.get("content")), "错误信息透传给了 LLM",
               str(failed.get("content"))[:100])
+
+        # ---- 右键：界面开没开是「成没成」的硬证据
+        #
+        # 真机踩过：目标在 6 格外时客户端会回 SUCCESS/PASS，服务端其实把交互包丢了。
+        # 所以结果里要报距离，并且用「界面弹出来了」当成功判据。
+        await asyncio.sleep(1.1)
+        client.custom_results["use_on_block"] = {
+            "clickedBlock": "minecraft:chest", "clickedPos": "(3, -60, 8)", "face": "west",
+            "result": "SUCCESS", "distance": 1.87, "handItem": "",
+            "screenOpened": True, "screen": "ContainerScreen", "screenTitle": "箱子",
+            "note": "界面已经弹出来了 —— 这次交互确实生效了。",
+        }
+        opened = await plugin.mc_use_on_block(x="~2", y="~", z="~")
+        check(bool(opened.get("success")) and "界面开了" in str(opened.get("content")),
+              "mc_use_on_block 把「界面弹出来了」当成功证据报出来",
+              str(opened.get("content"))[:160])
+        check("1.87" in str(opened.get("content")),
+              "mc_use_on_block 报出点击距离（判断够不够得着靠它）",
+              str(opened.get("content"))[:160])
+
+        client.custom_results["use_on_block"] = {
+            "clickedBlock": "minecraft:oak_button", "clickedPos": "(3, -60, 8)", "face": "west",
+            "result": "SUCCESS", "distance": 6.4, "handItem": "",
+            "screenOpened": False,
+            "note": "点完之后界面没有弹出来。两种情况都可能有：① 正常 —— 按钮、拉杆、门、耕地这些"
+                    "本来就不开界面；② 这次交互服务端根本没理（超过了交互距离…）。",
+        }
+        no_screen = await plugin.mc_use_on_block(x="~2", y="~", z="~")
+        ntext = str(no_screen.get("content"))
+        check("6.4" in ntext and "本来就不开界面" in ntext,
+              "界面没弹出时不硬报成功，而是把两种可能都说清楚（含距离）", ntext[:200])
+        client.custom_results.pop("use_on_block", None)
 
         # ---- 工具返回内容对 LLM 友好
         #

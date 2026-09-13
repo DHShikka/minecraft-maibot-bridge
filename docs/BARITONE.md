@@ -41,8 +41,11 @@ mc_baritone(action="goto", target="iron_ore")
 ```
 
 这样做的好处是**零依赖**：没装 Baritone 时这些消息就只是普通聊天，不会崩、
-不会报 ClassNotFound；装了就能用。代价是**拿不到它的进度**（它不回话），
+不会报 ClassNotFound；装了就能用。代价是**长活拿不到它的进度**（`goto`/`mine` 不回话），
 所以「挖够了没有」只能靠我们盯背包（`mine` 就是每 3 秒数一次背包里的量）。
+
+**但查询类指令是能拿到回话的** —— 见下面「把它的回话读出来」。于是 `status`、`wp_*`、
+`pause` 这些就能像普通工具一样「问一句、拿到答案」，而不是发完就瞎猜。
 
 ### 两个真机踩出来的坑
 
@@ -57,10 +60,52 @@ mc_baritone(action="goto", target="iron_ore")
 | `mine` | `#mine <数量> <方块>` / `#mine <方块>` | 数量在前；支持 `#minecraft:logs` 这种标签 |
 | `explore` | `#explore` | 自己往外探图（找岩浆湖、找结构） |
 | `tunnel` | `#tunnel <高度>` | 往前挖隧道 |
+| `farm` | `#farm` | 自动收/种附近的作物 |
+| `surface` | `#surface` | 走到地表 |
 | `come` / `follow` | `#come` / `#follow player <名字>` | 过来 / 跟着 |
 | `thisway` | `#thisway <格数>` | 朝当前朝向走 N 格 |
 | `build` | `#build <schematic>` | 按图纸建造（图纸要放进 Baritone 的 schematics 目录） |
+| `pause` / `resume` | `#pause` / `#resume` | 暂停 / 继续（**进度不丢**，换任务前比 stop 好） |
 | `stop` | `#stop` | 停下它的一切动作 |
+| `status` | `#proc` + `#eta` | 在跑什么 + 还要多久 |
+| `paused` / `version` / `help` | `#paused` / `#version` / `#help [指令]` | 问状态 / 版本 / 用法 |
+| `wp_save` | `#wp s [名字]` | 在当前位置存一个路径点 |
+| `wp_list` / `wp_info` | `#wp l` / `#wp i <名字>` | 列出 / 查坐标 |
+| `wp_go` / `wp_delete` | `#wp goto <名字>` / `#wp d <名字>` | 走过去 / 删掉 |
+| `saveall` / `reloadall` | `#saveall` / `#reloadall` | 配置存盘 / 重新加载 |
+
+> 这张表是拿 baritone v1.10.1 **逐条发过一遍、看聊天栏实际回话**挑出来的：
+> 哪些有回话、哪些要参数、哪些 1.10.1 上根本没有（`#damn`、`#schematica`、`#elytra`…
+> 别写进白名单）。完整实测记录在经验库的 baritone 那条里，`mc_recall` 能查。
+
+### 把它的回话读出来（真机踩出来的唯一可行路径）
+
+Baritone 是用 `ChatComponent.addMessage()` **直接把话打到聊天栏**的，不走服务端报文 ——
+所以 Forge 的 `ClientChatReceivedEvent` 根本不会触发。真机验证：
+
+- `mc_query` 的聊天事件里一条 Baritone 的话都没有（只有服务端发的系统消息）；
+- 而它的原话躺在游戏日志里：
+  `[Render thread/INFO] [minecraft/ChatComponent]: [System] [CHAT] [Baritone] Paused`。
+
+于是模组加了个 `BaritoneChatLog`：**读 `logs/latest.log` 的尾巴**（最多 256 KB），
+把 `[CHAT] [Baritone] ...` 的行削成原话；配一个 `baritone_reply` 动作返回
+「自上次问以来新出现的行」。插件在发查询类指令前先清一次、发完 0.9 秒再捞一次，
+捞到的就是这条指令的回话：
+
+```
+mc_baritone(action="version")
+  → 已发给 Baritone：#version
+    Baritone 回话：> version
+    You are running Baritone v1.10.1
+```
+
+实测能捞到的回话（v1.10.1）：`Paused` / `Resumed` / `Baritone is paused` /
+`Waypoint added: USER 矿洞入口 @ …` / `Position: BetterBlockPos{x=10,y=-60,z=-9}` /
+`Usage: > goto <block> - …` / `No process in control`。
+捞不到就如实说「没抓到回话」，绝不假装成功。
+
+`#wp l` 这类是拿「可点击列表」画出来的，落到日志里只剩 `--` 分隔线 ——
+插件会把这些噪声滤掉，并提示改用 `wp_info`（能直接拿到坐标）。
 
 ### 任务状态要和它同步（`BaritoneWatcher`）
 

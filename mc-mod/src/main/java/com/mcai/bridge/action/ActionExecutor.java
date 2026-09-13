@@ -923,6 +923,8 @@ case "dig_shaft" -> {
             case "recipes" -> CraftTask.recipes(id, params, instant);
             // 关界面：右键开出来的箱子/工作台界面会一直挡着，得有个明确动作关掉它
             case "close_screen" -> BasicTasks.closeScreen(id, params, instant);
+            // Baritone 刚说了什么（它的回话只进聊天栏，从游戏日志里捞）
+            case "baritone_reply" -> BasicTasks.baritoneReply(id, params, instant);
             // 枪械工作台（TaCZ）：列配方 / 报配方名制作
             case "gun_smith" -> GunSmithTask.create(id, params, instant);
 

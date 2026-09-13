@@ -106,6 +106,8 @@ A_SHOOT = "shoot"
 A_GUN_SMITH = "gun_smith"
 #: 关掉当前打开的界面（右键开出来的箱子/工作台会一直挡着）
 A_CLOSE_SCREEN = "close_screen"
+#: Baritone 刚说了什么（它的回话只进聊天栏，模组从游戏日志里捞）
+A_BARITONE_REPLY = "baritone_reply"
 
 ALL_ACTIONS = (
     A_CHAT, A_COMMAND, A_LOOK, A_MOVE_TO, A_MOVE_RELATIVE, A_FOLLOW, A_STOP, A_JUMP,
@@ -113,6 +115,7 @@ ALL_ACTIONS = (
     A_ATTACK, A_EQUIP, A_DROP, A_GET_STATE, A_SCAN_BLOCKS, A_SCAN_ENTITIES, A_SLEEP,
     A_WAIT, A_CANCEL, A_TASK_STATUS, A_JUMP_ON_BLOCK, A_CRAFT, A_RECIPES, A_SCRIPT, A_DEFEND,
     A_SMELT, A_BUCKET, A_DIG_SHAFT, A_TAKEOVER, A_RELOAD, A_SHOOT, A_GUN_SMITH, A_CLOSE_SCREEN,
+    A_BARITONE_REPLY,
 )
 
 # ---------------------------------------------------------------- 事件类型

@@ -375,6 +375,9 @@
 | `craft` | 是 | 是 | `allowInventory` |
 | `smelt` | 是 | 是 | `allowUse`（要开熔炉界面、也是「使用物品」） |
 | `recipes` | 否 | 否 | — |
+| `gun_smith` | 列配方：否 / 制作：是 | 否 | `allowInventory` |
+| `close_screen` | 否 | 否 | — |
+| `baritone_reply` | 否 | 否 | — |
 | `bucket` | 是 | 是 | `allowUse`（装/倒液体都算「使用物品」） |
 | `script` | 是 | 是 | 脚本里每个动作各自的开关 |
 | `wait` | 是 | 否 | — |

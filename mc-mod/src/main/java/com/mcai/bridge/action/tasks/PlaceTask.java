@@ -32,6 +32,15 @@ public final class PlaceTask extends Task {
     private static final double REACH_MARGIN = 0.8;
 
     /**
+     * {@code use_on_block} 点完之后等界面的最多 tick 数。
+     *
+     * <p>为什么值得等：右键箱子/工作台/熔炉这类，**界面弹出来才是真的成了**。
+     * 只看 {@code useItemOn} 的返回值会把没生效的点击报成成功 ——
+     * 真机上就出现过「目标在 6 格外，客户端回 SUCCESS/PASS，服务端其实把交互包丢了」。</p>
+     */
+    private static final int SCREEN_WAIT_TICKS = 12;
+
+    /**
      * 目标坐标。创建任务时可能还是 null —— 因为 {@code "~"} 这种相对坐标
      * 要等 {@link #onStart} 拿到玩家位置才算得出来。
      */
@@ -45,6 +54,13 @@ public final class PlaceTask extends Task {
     private int approachTicks;
     private Direction chosenFace;
     private BlockPos clickBlock;
+    /** 「导航说到地方了、但其实还是够不着」连续出现了几次。 */
+    private int arrivedNoReach;
+    /** 点完之后的回执（等界面时先存着）。 */
+    private JsonObject pending;
+    private int screenWait;
+    /** 点击之前是不是已经有界面开着（有的话就看不出这次点击的效果）。 */
+    private boolean screenWasOpen;
 
     private PlaceTask(final String id, final String type, final JsonObject params, final long timeoutMs,
                       final BlockPos target, final boolean placeMode, final String preferredFace,
@@ -112,6 +128,11 @@ public final class PlaceTask extends Task {
             fail("gameMode 不存在");
         }
 
+        // 已经点过了：等界面（开着就说明真的生效了）
+        if (pending != null) {
+            return settle(mc);
+        }
+
         // ------------------------------------------------------ 需要的话先换物品
         if (!equipped) {
             equipped = true;
@@ -171,9 +192,21 @@ public final class PlaceTask extends Task {
             switch (navigator.step(mc, 1.0)) {
                 case ARRIVED -> {
                     navigator.releaseControl();
+                    // 「导航说到地方了」不等于「真的够得着」：落脚点是按容差挑出来的，
+                    // 有时候到了还是差一点。以前这里直接 return null 让它下一 tick 重算，
+                    // 于是「走一点 → 还是够不着 → 再走一点」可以一直循环到超时/看门狗
+                    // （真机上就表现成「use_on_block 卡死」）。所以这里数着，连续几次
+                    // 到了还是够不着就直接说清楚。
+                    if (++arrivedNoReach > 30) {
+                        fail("走到落脚点了，但离 " + GameUtils.format(target) + " 还差 "
+                                + round(distance) + " 格（够得着的上限约 " + round(reach)
+                                + " 格）。多半是那个位置站不住、或者被别的东西挡着。"
+                                + "可以先自己 mc_move_to 靠近一点，再回来右键。");
+                    }
                     return null;
                 }
                 case MOVING -> {
+                    arrivedNoReach = 0;
                     approachTicks++;
                     if (approachTicks > 600) {
                         navigator.releaseControl();
@@ -198,6 +231,7 @@ public final class PlaceTask extends Task {
         }
         GameUtils.lookAt(player, hitPoint);
 
+        screenWasOpen = mc.screen != null;
         final InteractionHand hand = InteractionHand.MAIN_HAND;
         final BlockHitResult hit = new BlockHitResult(hitPoint, chosenFace, clickBlock, false);
         final InteractionResult result = mc.gameMode.useItemOn(player, hand, hit);
@@ -212,6 +246,9 @@ public final class PlaceTask extends Task {
         out.addProperty("face", chosenFace.getSerializedName());
         out.addProperty("result", String.valueOf(result));
         out.addProperty("handItem", GameUtils.itemId(player.getMainHandItem()));
+        // 距离报出来：够不够得着是「这次点击算不算数」的关键（服务端对超过 6 格的交互
+        // 直接丢包，而客户端这边照样会回一个 SUCCESS），AI 看到数字就能自己判断。
+        out.addProperty("distance", round(distance));
 
         if (placeMode) {
             final BlockState after = level.getBlockState(target);
@@ -222,11 +259,61 @@ public final class PlaceTask extends Task {
                 out.addProperty("hint", "点击已发出，但目标位置仍是空的。可能服务器拒绝了这次放置（距离过远、"
                         + "权限不足、或者目标位置其实不可放置）。可以换一个相邻坐标再试。");
             }
+            return TaskResult.success(out);
         }
-        return TaskResult.success(out);
+
+        // 右键类：**再等几 tick 看界面弹没弹** —— 这是「到底成了没」唯一的硬证据。
+        pending = out;
+        return null;
+    }
+
+    /**
+     * 点完之后等界面。
+     *
+     * <p>{@code useItemOn} 的返回值只代表**客户端**愿不愿意处理这次交互，
+     * 服务端那边完全可以把它丢掉（超过 6 格、方块被别人挖了、权限不够…）。
+     * 而「界面弹出来了」是客户端能亲眼看到的结果，所以把它当成功判据。</p>
+     */
+    private TaskResult settle(final Minecraft mc) {
+        if (screenWasOpen) {
+            pending.addProperty("screenOpened", false);
+            pending.addProperty("note", "点之前就已经有界面开着了，所以看不出这次点击的效果。"
+                    + "想确认就先 mc_close_screen 关掉、再右键一次。");
+            return TaskResult.success(pending);
+        }
+        if (mc.screen != null) {
+            String title = "";
+            try {
+                title = mc.screen.getTitle().getString();
+            } catch (final Throwable ignored) {
+                // 少数界面没有标题
+            }
+            pending.addProperty("screenOpened", true);
+            pending.addProperty("screen", mc.screen.getClass().getSimpleName());
+            if (!title.isBlank()) {
+                pending.addProperty("screenTitle", title);
+            }
+            pending.addProperty("note", "界面已经弹出来了 —— 这次交互确实生效了。"
+                    + "界面开着的时候用 mc_close_screen 关掉再干别的。");
+            return TaskResult.success(pending);
+        }
+        if (++screenWait >= SCREEN_WAIT_TICKS) {
+            pending.addProperty("screenOpened", false);
+            pending.addProperty("note", "点完之后界面没有弹出来。两种情况都可能有："
+                    + "① 正常 —— 按钮、拉杆、门、耕地这些本来就不开界面；"
+                    + "② 这次交互服务端根本没理（超过了交互距离、方块已经不在、没权限）。"
+                    + "拿不准就 mc_state 看一眼准星那个方块变了没有，别反复重试。");
+            return TaskResult.success(pending);
+        }
+        return null;
     }
 
     // ---------------------------------------------------------------- 辅助
+
+    /** 保留两位小数（回执里报距离用）。 */
+    private static double round(final double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
 
     /**
      * 目标位置是否可以放东西。
@@ -278,8 +365,12 @@ public final class PlaceTask extends Task {
                     .add(direction.getStepX() * 0.5, direction.getStepY() * 0.5, direction.getStepZ() * 0.5);
             double score = player.getEyePosition().distanceTo(hitPoint);
             if (preferred != null) {
-                // 明确指定了面就强烈优先，但也允许退化到其它面
-                score += direction == preferred ? -1000.0 : 100.0;
+                // 指定了面就强烈优先 —— 注意**朝向要反过来看**：
+                // 「点某个邻居的 X 面」等价于「那个邻居在目标的 X 反方向」。
+                // 以前这里写的是 direction == preferred，于是 face=up 会去找**目标上方**的邻居、
+                // 点它的底面（等于从天花板往下挂），而调用方想要的显然是
+                // 「点下面那块方块的顶面」—— 也就是邻居应该在 DOWN 方向。
+                score += direction == preferred.getOpposite() ? -1000.0 : 100.0;
             }
             if (direction == Direction.UP) {
                 score -= 0.5; // 顶面最容易点到，稍微倾斜一下选择

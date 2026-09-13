@@ -107,6 +107,19 @@ mc_baritone(action="version")
 `#wp l` 这类是拿「可点击列表」画出来的，落到日志里只剩 `--` 分隔线 ——
 插件会把这些噪声滤掉，并提示改用 `wp_info`（能直接拿到坐标）。
 
+**查之前的「清一次」不会把它的话吃掉**：清掉的那些行如果之前没人看过
+（典型情况：AI 自己用 `mc_chat` 发的 `#mine dirt 3` 报了错），会跟在后面一起带回来：
+
+```
+已发给 Baritone：#proc、#eta
+Baritone 回话：> proc
+No process in control
+（在这之前它还说：> mine dirt 3 / Error at argument #2: Expected w）
+```
+
+`pause` 之后状态里会写「**已暂停**（resume 接着干，进度还在）」而不是「已停」——
+这是模组里 BaritoneWatcher 的 `paused` 标记，别让 AI 把它当成卡住然后去重下指令。
+
 ### 任务状态要和它同步（`BaritoneWatcher`）
 
 交给 Baritone 之后，**干活的是它，我们的动作队列里什么都没有** ——

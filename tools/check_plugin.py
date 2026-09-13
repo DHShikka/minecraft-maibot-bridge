@@ -1286,6 +1286,15 @@ async def check_end_to_end(plugin: Any) -> None:
               "回话全是列表分隔线时说清楚，并指出更好的查法", ntext2[:200])
         client.custom_results.pop("baritone_reply", None)
 
+        # 洗回话的那把小刷子：去噪 + 去重（真机上 #wp l 会刷出一屏 "--"）
+        if baritone_mod is not None and hasattr(baritone_mod, "_baritone_useful_lines"):
+            washed = baritone_mod._baritone_useful_lines(
+                ["--", "Paused", "", "  ", "--", "Paused", "<< | >> 1/1",
+                 "Click to delete this waypoint", "Error at argument #2: Expected w"])
+            check(washed == ["Paused", "Error at argument #2: Expected w"],
+                  "Baritone 回话的清洗：滤掉分隔线/翻页/「Click to…」，去重，保留原话",
+                  str(washed))
+
         # ---- Baritone 的状态必须出现在任务状态里
         #
         # 背景：Baritone 干活时不经过模组的动作队列，所以 task_status 会说「空闲」——

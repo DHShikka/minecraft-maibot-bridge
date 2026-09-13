@@ -461,6 +461,18 @@ def _baritone_command(action: str, **kwargs: Any) -> str:
 _BARITONE_NOISE = re.compile(r"^(?:-+|<<\s*\|\s*>>.*|Click to .*)$")
 
 
+def _baritone_useful_lines(lines: Iterable[Any]) -> "list[str]":
+    """把日志里捞到的 Baritone 行洗一遍：去掉列表分隔线这类噪声，保留原话。"""
+    out: list[str] = []
+    for raw in lines:
+        text = str(raw).strip()
+        if not text or _BARITONE_NOISE.match(text):
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
 # ============================================================================
 #  常用预设
 # ============================================================================
@@ -1695,7 +1707,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
         baritone = task.get("baritone") or None
         if baritone:
-            state = "进行中" if baritone.get("running") else "已停"
+            state = ("已暂停（resume 接着干，进度还在）" if baritone.get("paused")
+                     else ("进行中" if baritone.get("running") else "已停"))
             lines.append(f"Baritone：{baritone.get('command')} —— {state}"
                          f"（{int(baritone.get('elapsedMs') or 0) // 1000} 秒，"
                          f"{'在动' if baritone.get('moving') else '暂时没动'}）")
@@ -2422,10 +2435,16 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         if isinstance(texts, str):
             return {"success": False, "content": texts[1:]}
 
-        # 查询类：先把「已经见过的回话」清掉 —— 这样待会儿捞到的就是**这条指令**的回话
+        # 查询类：先把「已经见过的回话」清掉 —— 这样待会儿捞到的就是**这条指令**的回话。
+        #
+        # 但清掉的那些不能就这么扔了：它们可能是**别的来源**刚说出来的（例如 AI 自己
+        # 用 mc_chat 发的 `#mine dirt 3` 报了错，或者用户手打的指令），
+        # 丢掉就等于把它的话吃了。所以先存着，最后一起带回去。
         wants_reply = name in self.BARITONE_REPLY_ACTIONS
+        earlier: list[str] = []
         if wants_reply:
-            await self._call(P.A_BARITONE_REPLY, {}, player=player, timeout=15.0)
+            stale = await self._call(P.A_BARITONE_REPLY, {}, player=player, timeout=15.0)
+            earlier = _baritone_useful_lines((stale.get("result") or {}).get("lines") or [])
 
         result: dict[str, Any] = {}
         for index, text in enumerate(texts):
@@ -2449,11 +2468,11 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         if wants_reply:
             await asyncio.sleep(0.9)
             replies = await self._call(P.A_BARITONE_REPLY, {}, player=player, timeout=15.0)
-            lines = [str(x) for x in ((replies.get("result") or {}).get("lines") or [])]
-            raw_count = len(lines)
+            raw = [str(x) for x in ((replies.get("result") or {}).get("lines") or [])]
+            raw_count = len(raw)
             # 它有些回话是拿「可点击列表」画出来的，落到日志里只剩分隔线（#wp l 就是这样）。
             # 这种噪声对模型没用，滤掉；滤完不剩东西就说明白，别让模型以为它什么都没说。
-            lines = [x for x in lines if not _BARITONE_NOISE.match(x.strip())]
+            lines = _baritone_useful_lines(raw)
             state = await self._call(P.A_GET_STATE, {}, player=player, timeout=15.0)
             baritone = (state.get("result") or {}).get("baritone") or {}
             event_reply = str(baritone.get("reply") or "").strip()
@@ -2462,9 +2481,19 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                     lines.append(candidate)
 
             head = "已发给 Baritone：" + "、".join(texts)
+            extra = [x for x in earlier if x not in lines]
             if lines:
-                return {"success": True, "content": f"{head}\nBaritone 回话：" + "\n".join(lines),
+                content = f"{head}\nBaritone 回话：" + "\n".join(lines)
+                if extra:
+                    content += "\n（在这之前它还说：" + " / ".join(extra) + "）"
+                return {"success": True, "content": content,
                         "baritone_command": texts, "reply": lines[-1], "replies": lines}
+            if extra:
+                # 这条指令它没回话，但刚才有别的话（往往是别的来源发的指令报的错）——
+                # 那才是真正有价值的信息，不能丢。
+                return {"success": True, "baritone_command": texts,
+                        "content": f"{head}\n这条它没回话。不过刚才它说过：" + " / ".join(extra),
+                        "reply": extra[-1], "replies": extra}
             if raw_count:
                 return {
                     "success": True,
@@ -3088,12 +3117,15 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         # Baritone 的活不经过模组的动作队列：不单列出来的话，「当前空闲」就是句假话。
         baritone = state.get("baritone") or {}
         if baritone:
+            paused = bool(baritone.get("paused"))
             lines.append(f"Baritone：{baritone.get('command')} —— "
-                         f"{'进行中' if baritone.get('running') else '已停'}"
+                         f"{'已暂停（resume 接着干，进度还在）' if paused else ('进行中' if baritone.get('running') else '已停')}"
                          f"（{int((baritone.get('elapsedMs') or 0) / 1000)} 秒，"
                          f"{'在动' if baritone.get('moving') else '暂时没动'}）")
             if baritone.get("reply"):
                 lines.append(f"  Baritone 回话：{baritone['reply']}")
+            if baritone.get("note"):
+                lines.append(f"  {baritone['note']}")
 
         # AI 托管状态：玩家能不能放开鼠标、失焦会不会暂停
         takeover = state.get("takeover") or {}

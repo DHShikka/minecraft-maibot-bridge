@@ -1245,6 +1245,33 @@ async def check_end_to_end(plugin: Any) -> None:
                   and list(cmds("saveall")) == ["#saveall"],
                   "surface/farm/saveall 也拼对了")
 
+            # 选区（圈地建造）：先标两个角，再填 / 砌墙
+            check(list(cmds("sel_pos1")) == ["#sel 1"] and list(cmds("sel_pos2")) == ["#sel 2"]
+                  and list(cmds("sel_clear")) == ["#sel c"] and list(cmds("sel_undo")) == ["#sel u"]
+                  and list(cmds("sel_walls")) == ["#sel w"],
+                  "选区：标角/清空/撤销/砌墙 都拼对了",
+                  str([cmds("sel_pos1"), cmds("sel_clear"), cmds("sel_walls")]))
+            check(list(cmds("sel_fill", target="stone")) == ["#sel f stone"],
+                  "sel_fill 要方块名（#sel f <方块>）", str(cmds("sel_fill", target="stone")))
+            check(str(cmds("sel_fill")).startswith("!"), "sel_fill 缺 target 时本地拦下",
+                  str(cmds("sel_fill")))
+            check(list(cmds("sel_expand", target="up", count=3)) == ["#sel expand a up 3"]
+                  and list(cmds("sel_expand")) == ["#sel expand a up 1"],
+                  "sel_expand 的实测可用写法：#sel expand a <方向> <格数>（默认 up 1）",
+                  str(cmds("sel_expand", target="up", count=3)))
+
+            # 目标类：goal / path / axis / invert
+            check(list(cmds("goal_xz", x=100, z=-200)) == ["#goal 100 -200"],
+                  "goal_xz → #goal <x> <z>（只看两个轴）", str(cmds("goal_xz", x=100, z=-200)))
+            check(list(cmds("goal_y", y=-59)) == ["#goal -59"],
+                  "goal_y → #goal <y>（挖到/爬到那一层）", str(cmds("goal_y", y=-59)))
+            check(list(cmds("goal_clear")) == ["#goal clear"] and list(cmds("path")) == ["#path"]
+                  and list(cmds("axis")) == ["#axis"] and list(cmds("invert")) == ["#invert"],
+                  "goal_clear / path / axis / invert 都拼对了")
+            check(str(cmds("goal_y")).startswith("!") and str(cmds("goal_xz", x=1)).startswith("!"),
+                  "goal 缺参数时本地拦下（别发一条它看不懂的指令）",
+                  str(cmds("goal_y")) + str(cmds("goal_xz", x=1)))
+
         await asyncio.sleep(1.1)
         await plugin.mc_baritone(action="pause")
         pause_action = await client.expect_action("chat", timeout=5)
@@ -1267,6 +1294,24 @@ async def check_end_to_end(plugin: Any) -> None:
         check(paused_reply.get("reply") == "Paused",
               "回话同时放在 reply 字段里（方便上层程序化使用）",
               str(paused_reply.get("reply")))
+
+        # 「回话了但其实干不了」：goal_y 真机上回 Goal: GoalYLevel{...}，可 proc 里是
+        # Next segment: NaNs —— 意思是算不出可行路径，于是原地不动。这种情况必须点出来。
+        client.custom_results["baritone_reply"] = {
+            "lines": ["Class: baritone.ik", "Display name: Custom Goal GoalYLevel{y=-64}",
+                      "Next segment: NaNs (NaN ticks)", "Goal: NaNs (NaN ticks)"],
+            "count": 4, "tail": [],
+        }
+        stuck = await plugin.mc_baritone(action="status")
+        await client.expect_action("chat", timeout=5)
+        stext = str(stuck.get("content"))
+        check("NaNs" in stext and "算不出可行路径" in stext and "tunnel" in stext,
+              "回话里出现 NaNs（算不出路）时点明「它会原地不动」并给出替代做法", stext[:220])
+        check(bool(stuck.get("stuck")), "这种情况在结果里标了 stuck", str(stuck.get("stuck")))
+
+        client.custom_results["baritone_reply"] = {
+            "lines": ["Paused"], "count": 1, "tail": ["v1.10.1", "Paused"], "content": "Paused",
+        }
 
         # 日志里也没有、事件里也没有 → 如实说没抓到，不能假装成功
         client.custom_results["baritone_reply"] = {"lines": [], "count": 0, "tail": []}

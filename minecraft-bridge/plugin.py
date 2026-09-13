@@ -443,6 +443,41 @@ def _baritone_commands(action: str, *, target: str = "", x: Any = None, y: Any =
             return f"!action={action} 需要 target（路径点名字）。先 action=wp_list 看看有哪些。"
         verb = {"wp_info": "i", "wp_go": "goto", "wp_delete": "d"}[action]
         return [f"#wp {verb} {t}"]
+    if action == "sel_pos1":
+        return ["#sel 1"]
+    if action == "sel_pos2":
+        return ["#sel 2"]
+    if action == "sel_undo":
+        return ["#sel u"]
+    if action == "sel_clear":
+        return ["#sel c"]
+    if action == "sel_walls":
+        return ["#sel w"]
+    if action == "sel_fill":
+        if not t:
+            return "!action=sel_fill 需要 target（用哪种方块填，例如 stone）。材料从背包里扣。"
+        return [f"#sel f {t}"]
+    if action == "sel_expand":
+        # 实测可用写法：#sel expand a up 1（a = 所有选区，方向，格数）
+        direction = t or "up"
+        steps = int(count) if int(count) > 0 else 1
+        return [f"#sel expand a {direction} {steps}"]
+    if action == "goal_xz":
+        if x is None or z is None:
+            return "!action=goal_xz 需要 x 和 z（只看这两个轴，高度它自己解决）。"
+        return [f"#goal {int(x)} {int(z)}"]
+    if action == "goal_y":
+        if y is None:
+            return "!action=goal_y 需要 y（要挖到/爬到哪一层，例如 -59）。"
+        return [f"#goal {int(y)}"]
+    if action == "goal_clear":
+        return ["#goal clear"]
+    if action == "path":
+        return ["#path"]
+    if action == "axis":
+        return ["#axis"]
+    if action == "invert":
+        return ["#invert"]
     if action == "saveall":
         return ["#saveall"]
     if action == "reloadall":
@@ -2335,6 +2370,21 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         "wp_info": "查某个路径点的坐标（target 给名字）",
         "wp_go": "走到某个路径点（target 给名字）",
         "wp_delete": "删掉某个路径点（target 给名字）",
+        # 选区（圈地建造：先标两个角，再填/砌墙）
+        "sel_pos1": "把选区第一个角设在**你现在站的位置**",
+        "sel_pos2": "把选区第二个角设在**你现在站的位置**（标完两个角就有范围了）",
+        "sel_expand": "把选区往某个方向扩几格（target 给方向，count 给格数，默认 up 1 格）",
+        "sel_fill": "用 target 指定的方块把选区填满（材料从背包扣）",
+        "sel_walls": "把选区做成只有四面墙（屋顶/围墙用；这条它不回话）",
+        "sel_undo": "撤销上一次选区改动",
+        "sel_clear": "清空所有选区",
+        # 目标（goal / path）
+        "goal_xz": "设一个只看 X/Z 的目标（给 x、z）—— 高度它自己挖上去或搭上去",
+        "goal_y": "设一个「到某个高度」的目标（给 y）—— 注意它不会自己挖下去，算不出路就原地不动",
+        "goal_clear": "取消当前目标",
+        "path": "让它重新算一次路径（它卡着不动时有用）",
+        "axis": "走到与你现在同一条 X 或 Z 轴上",
+        "invert": "把当前目标反过来（逃跑时有用）",
         # 维护
         "saveall": "把 Baritone 的设置存盘",
         "reloadall": "重新加载 Baritone 的设置",
@@ -2345,6 +2395,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
     BARITONE_REPLY_ACTIONS: ClassVar[set] = {
         "status", "paused", "version", "help", "pause", "resume", "surface", "farm",
         "saveall", "reloadall", "wp_save", "wp_list", "wp_info", "wp_go", "wp_delete",
+        "sel_pos1", "sel_pos2", "sel_expand", "sel_fill", "sel_undo", "sel_clear",
+        "goal_xz", "goal_y", "goal_clear", "path", "axis", "invert",
     }
 
     @Tool(
@@ -2380,6 +2432,19 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                 "wp_info": "查路径点坐标（target 给名字）",
                 "wp_go": "走到某个路径点（target 给名字）",
                 "wp_delete": "删掉某个路径点（target 给名字）",
+                "sel_pos1": "把选区第一个角设在当前位置（先站到角上再调）",
+                "sel_pos2": "把选区第二个角设在当前位置",
+                "sel_expand": "选区往某方向扩（target=方向 up/down/north/south/east/west，count=格数）",
+                "sel_fill": "用 target 的方块填满选区（材料从背包扣）",
+                "sel_walls": "选区只做四面墙",
+                "sel_undo": "撤销上一次选区改动",
+                "sel_clear": "清空所有选区",
+                "goal_xz": "设一个只看 X/Z 的目标（给 x、z；高度它自己解决）",
+                "goal_y": "设一个「到某个高度」的目标（给 y）—— 注意它**不会自己挖下去**，算不出路就原地不动",
+                "goal_clear": "取消当前目标",
+                "path": "重新算一次路径（卡住时用）",
+                "axis": "走到与现在同一条 X 或 Z 轴上",
+                "invert": "把当前目标反过来",
                 "saveall": "把 Baritone 的设置存盘",
                 "reloadall": "重新加载 Baritone 的设置",
             }.items()) + "\n"
@@ -2396,6 +2461,14 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             "  action=status                       问它现在在干什么、还要多久\n"
             "  action=pause / action=resume        暂停 / 继续（换任务前先 pause 比 stop 好，进度还在）\n"
             "  action=stop                         立刻停下\n"
+            "\n"
+            "圈地建造（选区）的用法：\n"
+            "  1. 站到第一个角 → action=sel_pos1\n"
+            "  2. 走到对角 → action=sel_pos2          （两个角之间的长方体就是选区）\n"
+            "  3. action=sel_fill, target=stone      用背包里的石头填满\n"
+            "     （只想砌墙就 action=sel_walls；填之前想扩一圈就 action=sel_expand）\n"
+            "  4. 做完 action=sel_clear 清掉选区\n"
+            "  注意：填/砌墙会**真的消耗背包里的方块**，不够它会自己暂停并说缺什么。\n"
             "\n"
             "注意：\n"
             "- goto/mine/explore 这类是**异步**的：指令发出去它自己就开始干了，不会等做完才返回。"
@@ -2482,12 +2555,19 @@ class MinecraftBridgePlugin(MaiBotPlugin):
 
             head = "已发给 Baritone：" + "、".join(texts)
             extra = [x for x in earlier if x not in lines]
+            # 真机踩到的：goal_y 这类「目标」指令它认了（回 Goal: GoalYLevel{y=-64}），
+            # 但 proc 里是 Next segment: NaNs —— 意思是**它算不出可行路径**，于是原地不动。
+            # 这种「回话了但其实干不了」必须点出来，否则 AI 会一直等它动。
+            stuck = any("NaN" in x for x in lines)
+            hint = ("\n⚠ 它算不出可行路径（回话里的 NaNs 就是这个意思），会原地不动。"
+                    "想往某个高度挖下去请用 mine / tunnel / goto，别指望 goal。") if stuck else ""
             if lines:
-                content = f"{head}\nBaritone 回话：" + "\n".join(lines)
+                content = f"{head}\nBaritone 回话：" + "\n".join(lines) + hint
                 if extra:
                     content += "\n（在这之前它还说：" + " / ".join(extra) + "）"
                 return {"success": True, "content": content,
-                        "baritone_command": texts, "reply": lines[-1], "replies": lines}
+                        "baritone_command": texts, "reply": lines[-1], "replies": lines,
+                        "stuck": stuck or None}
             if extra:
                 # 这条指令它没回话，但刚才有别的话（往往是别的来源发的指令报的错）——
                 # 那才是真正有价值的信息，不能丢。

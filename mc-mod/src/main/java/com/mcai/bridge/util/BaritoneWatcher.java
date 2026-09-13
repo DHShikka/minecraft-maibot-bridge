@@ -66,6 +66,17 @@ public final class BaritoneWatcher {
             "goto", "mine", "explore", "tunnel", "farm", "follow", "thisway", "come",
             "goal", "path", "axis", "invert", "surface", "build", "home", "sel", "find");
 
+    /**
+     * {@code #sel} 里真正**干活**的子指令（会动、会放方块）。
+     *
+     * <p>其余子指令（{@code 1} / {@code 2} / {@code c} / {@code u} / {@code expand}…）
+     * 只是改选区，人不会动 —— 把它们记成任务，状态里就会冒出
+     * 「Baritone：#sel 1 —— 下了指令但一直没动静」这种假警报。</p>
+     */
+    private static final java.util.Set<String> SEL_WORK = java.util.Set.of(
+            "f", "fill", "w", "walls", "r", "replace", "ca", "cleararea",
+            "shl", "shell", "h", "hollow");
+
     private BaritoneWatcher() {
     }
 
@@ -103,6 +114,12 @@ public final class BaritoneWatcher {
         if (head.equals("wp")) {
             final String sub = parts.length > 1 ? parts[1].toLowerCase(java.util.Locale.ROOT) : "";
             if (!sub.equals("g") && !sub.equals("goto")) {
+                return;
+            }
+        } else if (head.equals("sel")) {
+            // 选区同样分两种：改选区的那些不算任务（见 SEL_WORK 的说明）
+            final String sub = parts.length > 1 ? parts[1].toLowerCase(java.util.Locale.ROOT) : "";
+            if (!SEL_WORK.contains(sub)) {
                 return;
             }
         } else if (!TASK_COMMANDS.contains(head)) {

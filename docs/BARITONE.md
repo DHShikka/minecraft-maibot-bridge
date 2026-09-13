@@ -72,11 +72,46 @@ mc_baritone(action="goto", target="iron_ore")
 | `wp_save` | `#wp s [名字]` | 在当前位置存一个路径点 |
 | `wp_list` / `wp_info` | `#wp l` / `#wp i <名字>` | 列出 / 查坐标 |
 | `wp_go` / `wp_delete` | `#wp goto <名字>` / `#wp d <名字>` | 走过去 / 删掉 |
+| `sel_pos1` / `sel_pos2` | `#sel 1` / `#sel 2` | 把选区两个角设在当前位置 |
+| `sel_expand` | `#sel expand a <方向> <格数>` | 选区往某方向扩（实测可用写法就是这个） |
+| `sel_fill` / `sel_walls` | `#sel f <方块>` / `#sel w` | 填满 / 只做四面墙（**会消耗背包里的方块**） |
+| `sel_undo` / `sel_clear` | `#sel u` / `#sel c` | 撤销一步 / 清空选区 |
+| `goal_xz` / `goal_y` | `#goal <x> <z>` / `#goal <y>` | 设目标（只看 XZ / 只看高度） |
+| `goal_clear` / `path` | `#goal clear` / `#path` | 取消目标 / 重算路径 |
+| `axis` / `invert` | `#axis` / `#invert` | 走到同一条轴上 / 把目标反过来 |
 | `saveall` / `reloadall` | `#saveall` / `#reloadall` | 配置存盘 / 重新加载 |
 
 > 这张表是拿 baritone v1.10.1 **逐条发过一遍、看聊天栏实际回话**挑出来的：
 > 哪些有回话、哪些要参数、哪些 1.10.1 上根本没有（`#damn`、`#schematica`、`#elytra`…
 > 别写进白名单）。完整实测记录在经验库的 baritone 那条里，`mc_recall` 能查。
+
+### 圈地建造（选区）：真机跑通的完整流程
+
+```
+1. 站到第一个角 → action=sel_pos1        回话 "Position 1 has been set"
+2. 走到对角     → action=sel_pos2        回话 "Selection added"
+3. action=sel_fill, target=stone         回话 "Filling now"
+   （只想砌墙就 sel_walls；填之前想扩一圈就 sel_expand）
+4. action=sel_clear                      回话 "Removed 1 selections"
+```
+
+真机验证：两次 `tp` 拉出 3×1×3 的选区 → `sel_fill stone` → `mc_scan_blocks` 数到
+**正好 9 块石头**，坐标就是那个长方体；清空选区时还顺带捞到它上一句 `Done building`
+（那是「清之前那一次」带回来的行，见下面）。
+
+### 目标类（goal / path）的一个坑
+
+`#goal -64` 它会老老实实回 `Goal: GoalYLevel{y=-64}`，**但这不代表它要去挖** ——
+真机上它原地站了 36 秒没动，`#proc` 里是：
+
+```
+Display name: Custom Goal GoalYLevel{y=-64}
+Next segment: NaNs (NaN ticks)      ← 算不出可行路径
+```
+
+也就是说 GoalYLevel 是要它**走**到那一层，走不到就干站着（NaN = 无解），它不会自己挖阶梯下去。
+所以工具在回话里看到 `NaN` 会直接点明「它算不出可行路径，会原地不动」并提示改用
+`mine` / `tunnel` / `goto` —— 「回话了但其实干不了」这种必须说穿，否则 AI 会一直等它动。
 
 ### 把它的回话读出来（真机踩出来的唯一可行路径）
 

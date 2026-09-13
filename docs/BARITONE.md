@@ -85,6 +85,35 @@ mc_baritone(action="goto", target="iron_ore")
 > 哪些有回话、哪些要参数、哪些 1.10.1 上根本没有（`#damn`、`#schematica`、`#elytra`…
 > 别写进白名单）。完整实测记录在经验库的 baritone 那条里，`mc_recall` 能查。
 
+### 长活的进度：它到底往前推了多少
+
+`tunnel` / `explore` / `goto` 这类「一直往前」的活，背包不变、方块数也不变 ——
+**唯一的进度指标就是位移**。所以模组侧（`BaritoneWatcher`）在下指令时记下起点，
+之后每 tick 更新两个数：
+
+| 字段 | 含义 |
+|---|---|
+| `traveledBlocks` | 现在离起点多远（折返/绕路会变小） |
+| `maxTraveledBlocks` | 离起点**最远**到过多少格（只会变大，用来判断「到底干了多少」） |
+
+状态里长这样：
+
+```
+Baritone：#tunnel 2 —— 进行中（2 秒，在动，已推进 13.1 格）
+```
+
+工具层还多给一个 `distance` 参数：给了就**等它推进到那么远再返回**，边等边报进度。
+
+```
+mc_baritone(action="tunnel", count=2, distance=20)   往前挖 20 格，挖到才返回
+mc_baritone(action="explore", distance=100)          往外探 100 格
+```
+
+真机实测：`tunnel 2 + distance=12` 在 2.5 秒后返回
+「✅ Baritone 推进了 13.1 格（目标 12 格）」；没到位就如实报
+「⏳ 推进到 N 格（目标 M 格），它还在跑」并标 `stillRunning`，
+连续几次没挪窝且它已停下就提前收工，不傻等满 45 秒。
+
 ### 圈地建造（选区）：真机跑通的完整流程
 
 ```

@@ -123,4 +123,10 @@ public final class VanillaScriptContext implements ScriptContext {
         // 脚本自己就是当前动作，所以这里问的是「队列里还排着别的动作吗」
         return ActionExecutor.get().queueLength() > 0;
     }
+
+    @Override
+    public boolean baritoneIdle() {
+        // Baritone 的活不走我们的队列，只能问它自己的活动监视器（见 BaritoneWatcher）
+        return !com.mcai.bridge.util.BaritoneWatcher.active();
+    }
 }

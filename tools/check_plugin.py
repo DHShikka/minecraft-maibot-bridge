@@ -799,6 +799,27 @@ def check_presets(module: Any) -> None:
     _, error = module._build_preset("mine_until", {"counnt": 5})
     check("counnt" in str(error) and "count" in str(error),
           "预设参数写错时列出支持的参数", str(error)[:120])
+
+    # 盖房子预设：选区的顺序不能乱（角1 → 走开 → 角2 → 加高 → 砌墙 → 等它砌完 → 清选区）
+    house, house_error = module._build_preset("baritone_house", {"size": 4, "height": 2})
+    if house_error or house is None:
+        bad("baritone_house 能展开", house_error)
+        return
+    texts = [s.get("params", {}).get("message", "") for s in house["steps"]
+             if s.get("action") == "chat"]
+    check(texts[:2] == ["#wp s 家", "#sel 1"],
+          "盖房子：先记路径点，再把脚下标成第一个角", str(texts))
+    check("#sel 2" in texts and "#sel expand a up 1" in texts and "#sel w stone" in texts,
+          "盖房子：角2 → 加高（height=2 时扩 1 格）→ 砌墙", str(texts))
+    check(texts[-1] == "#sel c", "盖房子：最后清掉选区", str(texts))
+    check(any("move_relative" == s.get("action") for s in house["steps"]),
+          "盖房子：中间真的要走到对角（move_relative）",
+          str([s.get("action") for s in house["steps"]]))
+    waits = [s for s in house["steps"] if "waitUntil" in s]
+    check(bool(waits) and waits[0]["waitUntil"]["condition"] == {"baritoneIdle": True},
+          "盖房子：砌墙之后必须等 Baritone 停下（baritoneIdle）——"
+          "它干活不走模组的动作队列，不等就会立刻把选区清掉",
+          str(waits[:1]))
     _, error = module._build_preset("mine_until", {"count": 9999})
     check("1~200" in str(error), "预设参数超范围时报错", str(error)[:100])
     script, error = module._build_preset("mine_until", {"count": 8})

@@ -508,6 +508,34 @@ def _baritone_useful_lines(lines: Iterable[Any]) -> "list[str]":
     return out
 
 
+def _num(value: Any) -> str:
+    """把数字写成「12」或「12.5」这种，不要多余的 .0。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number == int(number) else f"{number:.1f}"
+
+
+def _baritone_progress_text(baritone: dict[str, Any]) -> str:
+    """Baritone 的进度：走了多远。
+
+    tunnel / explore 这类「一直往前」的活没有别的量化指标 —— 背包不变、方块数也不变，
+    只有位移能说明它到底在推进还是卡住了。所以模组侧记了「离起点最远到过多少格」。
+    """
+    far = baritone.get("maxTraveledBlocks")
+    if far is None:
+        return ""
+    text = f"，已推进 {_num(far)} 格"
+    now = baritone.get("traveledBlocks")
+    try:
+        if now is not None and float(far) - float(now) >= 3:
+            text += f"（现在离起点 {_num(now)} 格 —— 它折返或绕路了）"
+    except (TypeError, ValueError):
+        pass
+    return text
+
+
 # ============================================================================
 #  常用预设
 # ============================================================================
@@ -677,6 +705,37 @@ SCRIPT_PRESETS: dict[str, dict[str, Any]] = {
                 }, "optional": True},
             ],
         }],
+    },
+    "baritone_house": {
+        "summary": "用 Baritone 的选区盖一间屋子（四面墙），并把这里记成路径点",
+        "params": {
+            "block": ("建材（背包里要有够用的），默认 stone", "stone"),
+            "size": ("屋子边长（格），默认 5", 5),
+            "height": ("墙高（格），默认 3", 3),
+            "waypoint": ("记成哪个路径点，默认「家」", "家"),
+        },
+        # 为什么这么做：Baritone 的选区就是「圈地」，砌墙交给它比一步步 place 快得多，
+        # 而且它自己会处理「材料从背包里拿」「哪一格该放」这些事。
+        #
+        # 流程：记路径点 → 角 1 = 脚下 → 走到对角 → 角 2 → 往上扩到墙高 → 砌墙 → 等它砌完 → 清选区。
+        #
+        # 两个关键点：
+        #  · 「等它砌完」用的是 baritoneIdle 条件 —— Baritone 干活不走模组的动作队列，
+        #    光看 busy 永远是「空闲」，会立刻跑下一步把选区清掉。
+        #  · equip 那一步是为了兜底：万一这个 Baritone 版本不认 `#sel w <方块>` 的参数，
+        #    它就会用**手上拿的**方块，所以我们先把建材拿到手上。
+        "build": lambda p: [
+            _act("equip", item=p["block"]),
+            _act("chat", message=f"#wp s {p['waypoint']}"),
+            _act("chat", message="#sel 1"),
+            _act("move_relative", dx=max(1, p["size"]) - 1, dz=max(1, p["size"]) - 1),
+            _act("chat", message="#sel 2"),
+            *([_act("chat", message=f"#sel expand a up {max(1, p['height']) - 1}")]
+              if max(1, p["height"]) > 1 else []),
+            _act("chat", message=f"#sel w {p['block']}"),
+            {"waitUntil": {"condition": {"baritoneIdle": True}, "timeoutMs": 300000}},
+            _act("chat", message="#sel c"),
+        ],
     },
     "mine_then_craft": {        "summary": "挖够材料再合成（挖矿 + 条件循环 + 合成）",
         "params": {
@@ -2469,6 +2528,12 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             "     （只想砌墙就 action=sel_walls；填之前想扩一圈就 action=sel_expand）\n"
             "  4. 做完 action=sel_clear 清掉选区\n"
             "  注意：填/砌墙会**真的消耗背包里的方块**，不够它会自己暂停并说缺什么。\n"
+            "  要一整套「盖房子」，直接用 mc_script(preset=\"baritone_house\") 更省事。\n"
+            "\n"
+            "长活想知道进度就加 distance（tunnel/explore/goto）：\n"
+            "  action=tunnel, count=2, distance=20   往前挖 20 格，挖到才返回\n"
+            "  action=explore, distance=100          往外探 100 格\n"
+            "  不给 distance 就是「发完即返回」，进度自己用 mc_state 看。\n"
             "\n"
             "注意：\n"
             "- goto/mine/explore 这类是**异步**的：指令发出去它自己就开始干了，不会等做完才返回。"
@@ -2492,17 +2557,26 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                               description="goto 的目标 Z", required=False),
             ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER,
                               description="mine 挖几个 / thisway 走几格 / tunnel 高度", required=False, default=0),
+            ToolParameterInfo(name="distance", param_type=ToolParamType.INTEGER,
+                              description="tunnel/explore/goto：等它推进到这么多格再返回（不给就发完即返回）",
+                              required=False, default=0),
             ToolParameterInfo(name="player", param_type=ToolParamType.STRING,
                               description="指定游戏客户端", required=False, default=""),
         ],
     )
     async def mc_baritone(self, action: str, target: str = "", x: Any = None, y: Any = None,
-                          z: Any = None, count: int = 0, player: str = "", **kwargs: Any):
+                          z: Any = None, count: int = 0, distance: int = 0,
+                          player: str = "", **kwargs: Any):
         name = str(action).strip().lower()
         if name not in self.BARITONE_ACTIONS:
             return {"success": False,
                     "content": f"不认识的 Baritone 动作「{action}」。可用：" +
                                "、".join(self.BARITONE_ACTIONS)}
+
+        try:
+            want_distance = max(0, int(distance or 0))
+        except (TypeError, ValueError):
+            want_distance = 0
 
         texts = _baritone_commands(name, target=target, x=x, y=y, z=z, count=count)
         if isinstance(texts, str):
@@ -2626,6 +2700,13 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             result["success"] = done
             return result
 
+        # ---- tunnel / explore / goto：给了 distance 就等它推进到那么远
+        #
+        # 这几个是「一直往前」的活：背包不变、方块数也不变，唯一的进度就是**位移**。
+        # 不给 distance 就发完即返回（老行为）；给了就边等边报「已经推进了几格」。
+        if want_distance > 0 and name in ("tunnel", "explore", "goto"):
+            return await self._baritone_progress(name, texts, want_distance, player, result)
+
         result["content"] = (
             f"已交给 Baritone：{'、'.join(texts)}\n"
             "Baritone 是异步执行的，它会自己开始干；想停下就 mc_baritone(action=\"stop\")，"
@@ -2633,6 +2714,40 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         )
         result["baritone_command"] = texts
         return result
+
+    async def _baritone_progress(self, name: str, texts: list, want: int,
+                                 player: str, sent: dict) -> dict[str, Any]:
+        """等 Baritone 往前推进到 want 格，边等边看它有没有真的在动。"""
+        deadline = time.time() + 45.0        # 留在框架 60 秒 RPC 超时以内
+        far = 0.0
+        stalled = 0
+        baritone: dict[str, Any] = {}
+        while time.time() < deadline:
+            await asyncio.sleep(2.5)
+            state = await self._call(P.A_GET_STATE, {}, player=player, timeout=20.0)
+            baritone = (state.get("result") or {}).get("baritone") or {}
+            try:
+                now = float(baritone.get("maxTraveledBlocks") or 0)
+            except (TypeError, ValueError):
+                now = 0.0
+            if now >= want:
+                return {**sent, "success": True, "baritone_command": texts,
+                        "traveled": now,
+                        "content": (f"✅ Baritone 推进了 {_num(now)} 格（目标 {want} 格），"
+                                    f"{'、'.join(texts)} 还在跑。要停就 action=stop。")}
+            stalled = stalled + 1 if now <= far else 0
+            far = max(far, now)
+            # 连续几次都没挪窝、而且它已经报「没在跑」→ 别傻等满 45 秒
+            if stalled >= 4 and not baritone.get("running"):
+                break
+        detail = _baritone_progress_text(baritone)
+        return {**sent, "success": True, "stillRunning": True, "baritone_command": texts,
+                "traveled": far,
+                "content": (f"⏳ 已经交给 Baritone：{'、'.join(texts)}，"
+                            f"它推进到 {_num(far)} 格（目标 {want} 格）"
+                            + (detail[1:] if detail else "")
+                            + "。还没到位 —— 它还在跑，用 mc_state 或 action=status 看进展，"
+                              "要停就 action=stop。")}
 
     @Tool(
         "mc_bucket",
@@ -3201,7 +3316,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
             lines.append(f"Baritone：{baritone.get('command')} —— "
                          f"{'已暂停（resume 接着干，进度还在）' if paused else ('进行中' if baritone.get('running') else '已停')}"
                          f"（{int((baritone.get('elapsedMs') or 0) / 1000)} 秒，"
-                         f"{'在动' if baritone.get('moving') else '暂时没动'}）")
+                         f"{'在动' if baritone.get('moving') else '暂时没动'}"
+                         + _baritone_progress_text(baritone) + "）")
             if baritone.get("reply"):
                 lines.append(f"  Baritone 回话：{baritone['reply']}")
             if baritone.get("note"):

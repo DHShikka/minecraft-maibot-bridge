@@ -148,10 +148,16 @@ mc_script(preset="mine_until", preset_params={"item": "cobblestone", "count": 64
 | `mine_until` | 一直挖到背包里有够数为止（条件循环） | `item`、`block`、`count` |
 | `mine_then_craft` | 挖够材料再合成（挖矿 + 条件循环 + 合成） | `item`、`block`、`count`、`craft`、`craft_count` |
 | `defend_area` | 守在这里：有敌对生物就清掉，清干净就收工 | `radius`、`max_rounds` |
+| `baritone_house` | 用 Baritone 的选区盖一间屋子（四面墙），并把这里记成路径点 | `block`、`size`、`height`、`waypoint` |
 
 > `mine_then_craft` 解决的是「差一点材料」这一类来回：先 `mine_until` 攒够，再 `craft`。
 > `defend_area` 用脚本层的 `while` + `attack` 表达「守着」，好处是**每一步都看得见**；
 > 想要「会自保的抵御」（残血先吃、被围就撤、挑目标优先级）直接用 `mc_defend`。
+>
+> `baritone_house` 是「让 Baritone 干活」的样板：记路径点 → 标选区两个角 →
+> 往上扩到墙高 → `#sel w <建材>` 砌墙 → **等 Baritone 停下**（`baritoneIdle`）→ 清选区。
+> 实测（超平坦，size=4 height=3）：13 秒跑完，砌上 24 块石头（有 12 处本来就被地形占着，
+> Baritone 会跳过），路径点「家」记在 `(3,-60,4)`。
 
 **脚本里能用的动作**就是协议动作总表里的那些（见 [PROTOCOL.md](PROTOCOL.md) 第 5 节），
 包括 `smelt`（烧矿）、`bucket`（装/倒液体）、`dig_shaft`（往下挖阶梯矿道）——
@@ -201,6 +207,7 @@ mc_script(preset="mine_until", preset_params={"item": "cobblestone", "count": 64
 | `{"atPos": {"x": 1, "y": 65, "z": 0, "radius": 2}}` | 在某个坐标附近 |
 | `{"nearby": {"type": "zombie", "radius": 8, "min": 1}}` | 附近有实体（`type` 也支持 `hostile` / `animal` / `player`） |
 | `{"busy": false}` | 当前没有别的动作在跑 |
+| `{"baritoneIdle": true}` | Baritone 已经停下（**它干活不走模组的动作队列**，`busy` 对它永远是「空闲」，所以「等它砌完墙」只能用这个） |
 | `{"all": [ ... ]}` / `{"any": [ ... ]}` / `{"not": { ... }}` | 逻辑组合 |
 | `{"always": true}` | 恒真（占位用） |
 

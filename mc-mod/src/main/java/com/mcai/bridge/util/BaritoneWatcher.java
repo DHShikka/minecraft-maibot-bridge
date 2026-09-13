@@ -53,6 +53,10 @@ public final class BaritoneWatcher {
     private static boolean everMoved;
     /** 被 {@code #pause} 暂停了（这时候「没动静」是正常的，不该报成卡住）。 */
     private static boolean paused;
+    /** 下这条指令时玩家在哪 —— 用来算「它已经走了多远」（tunnel/explore 唯一的进度指标）。 */
+    private static Vec3 startPos;
+    /** 离起点最远走过多少格（中途折返也不会把这个数字变小）。 */
+    private static double maxTraveled;
 
     /**
      * 哪些指令是「让 Baritone 干活」的。
@@ -138,6 +142,10 @@ public final class BaritoneWatcher {
         sawActivity = false;
         everMoved = false;
         paused = false;
+        // 记下起点：tunnel / explore 这类「一直往前」的活，进度就看它走了多远。
+        final net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        startPos = mc != null && mc.player != null ? mc.player.position() : null;
+        maxTraveled = 0;
     }
 
     /**
@@ -166,6 +174,12 @@ public final class BaritoneWatcher {
         }
         final long now = System.currentTimeMillis();
         final Vec3 pos = player.position();
+        if (startPos != null) {
+            final double traveled = Math.sqrt(pos.distanceToSqr(startPos));
+            if (traveled > maxTraveled) {
+                maxTraveled = traveled;
+            }
+        }
         if (lastPos == null || pos.distanceToSqr(lastPos) > MOVE_EPSILON_SQR) {
             lastPos = pos;
             moving = true;
@@ -211,6 +225,16 @@ public final class BaritoneWatcher {
         o.addProperty("idleMs", idleMs);
         o.addProperty("moving", running && moving);
         o.addProperty("everMoved", everMoved);
+        // 进度：tunnel / explore 这类「一直往前」的活，看它走了多远就知道有没有在推进。
+        // 报两个数：现在离起点多远（traveledBlocks）和走得最远到过多少（maxTraveledBlocks）——
+        // 中途折返或绕路时，前者会缩、后者不会，AI 用后者判断「到底干了多少」。
+        if (startPos != null) {
+            final net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
+            if (player != null) {
+                o.addProperty("traveledBlocks", round(Math.sqrt(player.position().distanceToSqr(startPos))));
+            }
+            o.addProperty("maxTraveledBlocks", round(maxTraveled));
+        }
         if (!lastReply.isEmpty()) {
             o.addProperty("reply", lastReply);
             o.addProperty("replyAgoMs", now - lastReplyAt);
@@ -244,10 +268,22 @@ public final class BaritoneWatcher {
         final boolean pausedNow = json.has("paused") && json.get("paused").getAsBoolean();
         sb.append(pausedNow ? "（已暂停 " : (json.get("running").getAsBoolean() ? "（进行中 " : "（已停 "));
         sb.append(json.get("elapsedMs").getAsLong() / 1000).append(" 秒）");
+        if (json.has("maxTraveledBlocks")) {
+            sb.append("，已走 ").append(fmt(json.get("maxTraveledBlocks").getAsDouble())).append(" 格");
+        }
         if (json.has("reply")) {
             sb.append(" 回话：").append(json.get("reply").getAsString());
         }
         return sb.toString();
+    }
+
+    /** 保留一位小数（报距离用）。 */
+    private static double round(final double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    private static String fmt(final double value) {
+        return value == Math.rint(value) ? String.valueOf((long) value) : String.valueOf(value);
     }
 
     /** 还认不认为 Baritone 在跑（给 stop 用：要顺手把它也停了）。 */

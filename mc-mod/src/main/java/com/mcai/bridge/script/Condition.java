@@ -132,6 +132,24 @@ public sealed interface Condition {
         }
     }
 
+    /**
+     * Baritone 闲下来了没有。
+     *
+     * <p>Baritone 干活不经过模组的动作队列，{@code busy} 对它永远是「空闲」，
+     * 所以「等它把这段墙砌完」只能靠这个条件。</p>
+     */
+    record BaritoneIdle(boolean expected) implements Condition {
+        @Override
+        public boolean test(final ScriptContext ctx) {
+            return ctx.baritoneIdle() == expected;
+        }
+
+        @Override
+        public String describe() {
+            return expected ? "Baritone 已经停下" : "Baritone 还在干活";
+        }
+    }
+
     record All(List<Condition> parts) implements Condition {
         @Override
         public boolean test(final ScriptContext ctx) {
@@ -216,11 +234,13 @@ public sealed interface Condition {
             case "atpos" -> parseAtPos(value, child);
             case "nearby" -> parseNearby(value, child);
             case "busy" -> new Busy(requireBoolean(value, child));
+            case "baritoneidle" -> new BaritoneIdle(requireBoolean(value, child));
             case "all" -> new All(parseList(value, child));
             case "any" -> new Any(parseList(value, child));
             case "not" -> new Not(parse(value, child));
             default -> throw new ScriptParseException(child.replace("." + key, "") + "：不认识的条件「" + key
-                    + "」。可用：has / holding / healthBelow / foodBelow / atPos / nearby / busy / all / any / not");
+                    + "」。可用：has / holding / healthBelow / foodBelow / atPos / nearby / busy / "
+                    + "baritoneIdle / all / any / not");
         };
     }
 

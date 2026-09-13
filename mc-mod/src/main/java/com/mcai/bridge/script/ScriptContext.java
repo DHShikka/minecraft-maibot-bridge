@@ -32,4 +32,13 @@ public interface ScriptContext {
 
     /** 当前是否还有别的动作在跑（用于「等它做完」这类条件）。 */
     boolean busy();
+
+    /**
+     * Baritone 是不是闲着（没在干活 / 已经停下来）。
+     *
+     * <p>为什么需要：Baritone 的活**不经过模组的动作队列**，{@link #busy()} 永远是 false，
+     * 所以「等它把这段墙砌完再干下一步」这种脚本根本没法写。有了这个条件，
+     * {@code {"waitUntil": {"condition": {"baritoneIdle": true}}}} 才是可靠的。</p>
+     */
+    boolean baritoneIdle();
 }

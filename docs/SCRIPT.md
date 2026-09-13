@@ -155,9 +155,11 @@ mc_script(preset="mine_until", preset_params={"item": "cobblestone", "count": 64
 > 想要「会自保的抵御」（残血先吃、被围就撤、挑目标优先级）直接用 `mc_defend`。
 >
 > `baritone_house` 是「让 Baritone 干活」的样板：记路径点 → 标选区两个角 →
-> 往上扩到墙高 → `#sel w <建材>` 砌墙 → **等 Baritone 停下**（`baritoneIdle`）→ 清选区。
-> 实测（超平坦，size=4 height=3）：13 秒跑完，砌上 24 块石头（有 12 处本来就被地形占着，
-> Baritone 会跳过），路径点「家」记在 `(3,-60,4)`。
+> 往上扩到墙高 → **`#sel shl <建材>` 盖一圈外壳（地板+四壁+屋顶）** →
+> 等 Baritone 停下（`baritoneIdle`）→ 清选区。`roof=false` 就改成只砌四面墙（`#sel w`）。
+> 实测（超平坦，size=4 height=3）：13 秒跑完 8 个动作，砌 44 块石头
+> （= 4×3×4 的外壳；地形占掉的位置会被跳过，所以实际块数可能少一些），
+> 盖完玩家被顶到屋顶上站着，低头就是屋顶那层石头；路径点记在选区角上。
 
 **脚本里能用的动作**就是协议动作总表里的那些（见 [PROTOCOL.md](PROTOCOL.md) 第 5 节），
 包括 `smelt`（烧矿）、`bucket`（装/倒液体）、`dig_shaft`（往下挖阶梯矿道）——

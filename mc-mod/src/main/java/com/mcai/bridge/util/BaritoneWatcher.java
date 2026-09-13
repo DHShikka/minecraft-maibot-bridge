@@ -79,7 +79,9 @@ public final class BaritoneWatcher {
      */
     private static final java.util.Set<String> SEL_WORK = java.util.Set.of(
             "f", "fill", "w", "walls", "r", "replace", "ca", "cleararea",
-            "shl", "shell", "h", "hollow");
+            "shl", "shell");
+    // 注意：没有 "h"。v1.10.1 上 `#sel h` 不存在（真机回 "Error at argument #1:
+    // Expected an action"），带屋顶的一圈外壳是 `#sel shl <方块>`。
 
     private BaritoneWatcher() {
     }

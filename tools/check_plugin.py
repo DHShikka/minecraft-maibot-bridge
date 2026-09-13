@@ -809,9 +809,32 @@ def check_presets(module: Any) -> None:
              if s.get("action") == "chat"]
     check(texts[:2] == ["#wp s 家", "#sel 1"],
           "盖房子：先记路径点，再把脚下标成第一个角", str(texts))
-    check("#sel 2" in texts and "#sel expand a up 1" in texts and "#sel w stone" in texts,
-          "盖房子：角2 → 加高（height=2 时扩 1 格）→ 砌墙", str(texts))
+    check("#sel 2" in texts and "#sel expand a up 1" in texts and "#sel shl stone" in texts,
+          "盖房子：角2 → 加高（height=2 时扩 1 格）→ 盖一圈外壳（默认带屋顶）", str(texts))
     check(texts[-1] == "#sel c", "盖房子：最后清掉选区", str(texts))
+
+    # roof=false 改成只砌四面墙；而且模型常把布尔写成字符串，得认 "false"
+    walls_only, walls_error = module._build_preset("baritone_house", {"roof": False})
+    if walls_error or walls_only is None:
+        bad("baritone_house roof=false 能展开", walls_error)
+    else:
+        wall_texts = [s.get("params", {}).get("message", "") for s in walls_only["steps"]
+                      if s.get("action") == "chat"]
+        check("#sel w stone" in wall_texts and "#sel shl stone" not in wall_texts,
+              "盖房子：roof=false 时只砌四面墙（#sel w，留天）", str(wall_texts))
+    walls_str, _ = module._build_preset("baritone_house", {"roof": "false"})
+    walls_str_texts = [s.get("params", {}).get("message", "") for s in (walls_str or {}).get("steps", [])
+                       if s.get("action") == "chat"]
+    check("#sel w stone" in walls_str_texts,
+          '盖房子：roof="false"（字符串）也要当成假 —— 模型经常这么写',
+          str(walls_str_texts))
+    check(module._baritone_command("sel_shell", target="stone") == "#sel shl stone",
+          "sel_shell → #sel shl <方块>（实测：这就是带屋顶的一圈外壳）",
+          str(module._baritone_command("sel_shell", target="stone")))
+    check(module._baritone_command("sel_hollow", target="stone") == "#sel shl stone",
+          "sel_hollow 也走 shl —— #sel h 在 v1.10.1 上不存在"
+          "（真机回 Error at argument #1: Expected an action），别把死路留给模型",
+          str(module._baritone_command("sel_hollow", target="stone")))
     check(any("move_relative" == s.get("action") for s in house["steps"]),
           "盖房子：中间真的要走到对角（move_relative）",
           str([s.get("action") for s in house["steps"]]))

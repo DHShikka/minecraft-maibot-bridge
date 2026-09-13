@@ -119,14 +119,27 @@ mc_baritone(action="explore", distance=100)          往外探 100 格
 ```
 1. 站到第一个角 → action=sel_pos1        回话 "Position 1 has been set"
 2. 走到对角     → action=sel_pos2        回话 "Selection added"
-3. action=sel_fill, target=stone         回话 "Filling now"
-   （只想砌墙就 sel_walls；填之前想扩一圈就 sel_expand）
+3. action=sel_shell, target=stone        回话 "Filling now" —— 一圈外壳（地板+四壁+屋顶）
+   （只砌四面墙、留天：action=sel_walls；填实心：action=sel_fill）
 4. action=sel_clear                      回话 "Removed 1 selections"
 ```
 
-真机验证：两次 `tp` 拉出 3×1×3 的选区 → `sel_fill stone` → `mc_scan_blocks` 数到
-**正好 9 块石头**，坐标就是那个长方体；清空选区时还顺带捞到它上一句 `Done building`
-（那是「清之前那一次」带回来的行，见下面）。
+**带屋顶的是 `#sel shl`，不是 `#sel h`**：真机试过，`#sel h stone` 会被拒
+（`Error at argument #1: Expected an action` —— v1.10.1 没这个子指令），
+而 `#sel shl <方块>` 好使，盖出来的就是**一圈外壳**：
+真机在 4×3×4 的空选区上实测**正好 44 块** = 48 − 内部 2×1×2，每层都对得上
+（屋顶那层、四壁、地板都在）。
+
+实测数据：
+
+| 场景 | 结果 |
+|---|---|
+| 4×3×4 空选区 `#sel shl stone` | 44 块（地板+四壁+屋顶），背包正好扣 44 |
+| 盖完之后玩家位置 | 被顶到**屋顶上面**站着；低头看是 `石头 @ (x,-58,z)`，就是屋顶 |
+| 地形占掉一部分位置时 | 块数会少（Baritone 跳过本来就有方块的位置），真机上出现过 24/26 块 |
+
+也就是说：**房子是有顶的**，材料按「一圈外壳」算 —— 边长 4、墙高 3 约 44 块，
+边长 5、墙高 3 约 66 块，出门前按这个备料。
 
 ### 目标类（goal / path）的一个坑
 

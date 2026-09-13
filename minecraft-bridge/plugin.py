@@ -457,6 +457,13 @@ def _baritone_commands(action: str, *, target: str = "", x: Any = None, y: Any =
         if not t:
             return "!action=sel_fill 需要 target（用哪种方块填，例如 stone）。材料从背包里扣。"
         return [f"#sel f {t}"]
+    if action in ("sel_hollow", "sel_shell"):
+        if not t:
+            return f"!action={action} 需要 target（用哪种方块，例如 stone）。材料从背包里扣。"
+        # 真机实测（v1.10.1）：#sel h 不存在（回 "Error at argument #1: Expected an action"），
+        # 但 #sel shl <方块> 好使 —— 它盖的是**一圈外壳**：地板 + 四壁 + 屋顶一次成型
+        # （4x3x4 的选区实测正好 44 块 = 48 − 内部 2x1x2）。
+        return [f"#sel shl {t}"]
     if action == "sel_expand":
         # 实测可用写法：#sel expand a up 1（a = 所有选区，方向，格数）
         direction = t or "up"
@@ -562,6 +569,18 @@ def _optional(step: dict[str, Any]) -> dict[str, Any]:
 def _place_table_at_feet() -> dict[str, Any]:
     """把工作台放到自己脚下（"~" 是相对坐标，由模组在开始时按玩家位置解析）。"""
     return _optional(_act("place", x="~", y="~-1", z="~", item="crafting_table"))
+
+
+def _truthy(value: Any) -> bool:
+    """预设参数里的布尔判断：字符串 "false"/"0"/"no" 也算假。
+
+    为什么不能直接 if value：这些参数是模型填的，它经常把布尔写成字符串
+    （"true" / "false"），而 Python 里非空字符串永远为真 —— 直接 if 会让
+    「roof=false」变成「要屋顶」。
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off", "none")
+    return bool(value)
 
 
 def _as_int(params: dict[str, Any], key: str, default: int) -> int:
@@ -707,22 +726,26 @@ SCRIPT_PRESETS: dict[str, dict[str, Any]] = {
         }],
     },
     "baritone_house": {
-        "summary": "用 Baritone 的选区盖一间屋子（四面墙），并把这里记成路径点",
+        "summary": "用 Baritone 的选区盖一间屋子（默认带屋顶），并把这里记成路径点",
         "params": {
             "block": ("建材（背包里要有够用的），默认 stone", "stone"),
             "size": ("屋子边长（格），默认 5", 5),
             "height": ("墙高（格），默认 3", 3),
+            "roof": ("要不要屋顶（true = 地板+四壁+屋顶，false = 只砌四面墙），默认 true", True),
             "waypoint": ("记成哪个路径点，默认「家」", "家"),
         },
-        # 为什么这么做：Baritone 的选区就是「圈地」，砌墙交给它比一步步 place 快得多，
+        # 为什么这么做：Baritone 的选区就是「圈地」，盖房子交给它比一步步 place 快得多，
         # 而且它自己会处理「材料从背包里拿」「哪一格该放」这些事。
         #
-        # 流程：记路径点 → 角 1 = 脚下 → 走到对角 → 角 2 → 往上扩到墙高 → 砌墙 → 等它砌完 → 清选区。
+        # 流程：记路径点 → 角 1 = 脚下 → 走到对角 → 角 2 → 往上扩到墙高 → 盖壳 → 等它盖完 → 清选区。
         #
-        # 两个关键点：
-        #  · 「等它砌完」用的是 baritoneIdle 条件 —— Baritone 干活不走模组的动作队列，
+        # 三个关键点：
+        #  · `#sel shl <方块>` 是**一圈外壳**（地板+四壁+屋顶）—— 真机实测 4x3x4 的选区正好 44 块
+        #    = 48 − 内部 2x1x2。想要「只砌墙、留天」就用 `#sel w`（roof=false）。
+        #    （别用 `#sel h`：v1.10.1 上没这个子指令，它会回 "Error at argument #1"。）
+        #  · 「等它盖完」用的是 baritoneIdle 条件 —— Baritone 干活不走模组的动作队列，
         #    光看 busy 永远是「空闲」，会立刻跑下一步把选区清掉。
-        #  · equip 那一步是为了兜底：万一这个 Baritone 版本不认 `#sel w <方块>` 的参数，
+        #  · equip 那一步是兜底：万一这个 Baritone 版本不认 `#sel ... <方块>` 的参数，
         #    它就会用**手上拿的**方块，所以我们先把建材拿到手上。
         "build": lambda p: [
             _act("equip", item=p["block"]),
@@ -732,7 +755,8 @@ SCRIPT_PRESETS: dict[str, dict[str, Any]] = {
             _act("chat", message="#sel 2"),
             *([_act("chat", message=f"#sel expand a up {max(1, p['height']) - 1}")]
               if max(1, p["height"]) > 1 else []),
-            _act("chat", message=f"#sel w {p['block']}"),
+            _act("chat", message=(f"#sel shl {p['block']}" if _truthy(p["roof"])
+                                  else f"#sel w {p['block']}")),
             {"waitUntil": {"condition": {"baritoneIdle": True}, "timeoutMs": 300000}},
             _act("chat", message="#sel c"),
         ],
@@ -2434,7 +2458,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         "sel_pos2": "把选区第二个角设在**你现在站的位置**（标完两个角就有范围了）",
         "sel_expand": "把选区往某个方向扩几格（target 给方向，count 给格数，默认 up 1 格）",
         "sel_fill": "用 target 指定的方块把选区填满（材料从背包扣）",
-        "sel_walls": "把选区做成只有四面墙（屋顶/围墙用；这条它不回话）",
+        "sel_walls": "把选区做成只有四面墙（没有地板和屋顶）",
+        "sel_shell": "把选区做成**一圈外壳**：地板 + 四面墙 + 屋顶一次成型（盖房子用这个）",
         "sel_undo": "撤销上一次选区改动",
         "sel_clear": "清空所有选区",
         # 目标（goal / path）
@@ -2455,6 +2480,7 @@ class MinecraftBridgePlugin(MaiBotPlugin):
         "status", "paused", "version", "help", "pause", "resume", "surface", "farm",
         "saveall", "reloadall", "wp_save", "wp_list", "wp_info", "wp_go", "wp_delete",
         "sel_pos1", "sel_pos2", "sel_expand", "sel_fill", "sel_undo", "sel_clear",
+        "sel_shell",
         "goal_xz", "goal_y", "goal_clear", "path", "axis", "invert",
     }
 
@@ -2495,7 +2521,8 @@ class MinecraftBridgePlugin(MaiBotPlugin):
                 "sel_pos2": "把选区第二个角设在当前位置",
                 "sel_expand": "选区往某方向扩（target=方向 up/down/north/south/east/west，count=格数）",
                 "sel_fill": "用 target 的方块填满选区（材料从背包扣）",
-                "sel_walls": "选区只做四面墙",
+                "sel_walls": "选区只做四面墙（没地板没屋顶）",
+                "sel_shell": "选区做成一圈外壳（地板+四壁+屋顶）—— 盖房子用这个",
                 "sel_undo": "撤销上一次选区改动",
                 "sel_clear": "清空所有选区",
                 "goal_xz": "设一个只看 X/Z 的目标（给 x、z；高度它自己解决）",
